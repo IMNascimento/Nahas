@@ -13,12 +13,68 @@ from src.utils.csv_handler import CSVHandler
 import matplotlib.pyplot as plt
 from pandas.plotting import autocorrelation_plot
 import joblib  # Para salvar o scaler
+from src.utils.technical_indicators import TechnicalIndicators
 
 # Fixar a semente para garantir reprodutibilidade
 seed = 42
 np.random.seed(seed)
 tf.random.set_seed(seed)
 random.seed(seed)
+
+def adicionar_indicadores(df):
+    """
+    Adiciona indicadores técnicos ao DataFrame.
+    
+    :param df: DataFrame contendo os dados de preços.
+    :return: DataFrame com indicadores técnicos adicionados.
+    """
+    # Adicionar indicadores ao DataFrame
+    df['SMA_20'] = TechnicalIndicators.sma(df['close'], period=20)  # Média Móvel Simples
+    df['EMA_20'] = TechnicalIndicators.ema(df['close'], period=20)  # Média Móvel Exponencial
+    df['RSI_14'] = TechnicalIndicators.rsi(df['close'], period=14)  # Índice de Força Relativa
+    
+    macd_df = TechnicalIndicators.macd(df['close'])  # MACD
+    df = pd.concat([df, macd_df], axis=1)  # Adicionando MACD, Signal e Histograma ao DataFrame
+
+    envelopes_df = TechnicalIndicators.envelopes(df['close'], period=20, percent=3.0)  # Envelopes de Preço
+    df = pd.concat([df, envelopes_df], axis=1)  # Adicionando os Envelopes ao DataFrame
+
+    return df
+
+def calcular_e_exibir_correlacao(df):
+    """
+    Calcula e exibe a correlação entre indicadores técnicos e o preço de fechamento.
+    
+    :param df: DataFrame com indicadores técnicos e preços.
+    """
+
+    # Selecionar apenas colunas numéricas
+    df_numerico = df.select_dtypes(include=[np.number])
+    # Calcular a correlação com a coluna 'close'
+    if 'close' in df_numerico.columns:
+        correlacoes = df_numerico.corr()['close'].drop('close')
+        print(correlacoes)
+    else:
+        print("A coluna 'close' não está presente no DataFrame ou não é numérica.")
+
+    # Exibir correlações por escrito
+    print("\nCorrelação entre indicadores técnicos e o preço de fechamento:")
+    print(correlacoes)
+
+    # Plotar correlação
+    plt.figure(figsize=(10, 6))
+    correlacoes.plot(kind='bar', color='skyblue')
+    plt.title('Correlação entre Indicadores Técnicos e Preço de Fechamento')
+    plt.xlabel('Indicadores Técnicos')
+    plt.ylabel('Correlação')
+    plt.grid(True)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    # Salvar o gráfico como imagem
+    plt.savefig('correlacao_indicadores.png')
+    print("Gráfico de correlação salvo em: correlacao_indicadores.png")
+    plt.show()
 
 def plot_comparacao_regressao_linear(y_real, y_pred_linear, save_path='comparacao_regressao_linear.png'):
     """
@@ -400,7 +456,8 @@ def menu():
         print("3 - Treinar ambos (LSTM + Regressão Linear) e Hibridizar")
         print("4 - Gerar Matriz de Autocorrelação")
         print("5 - Carregar e Executar um Modelo Salvo")
-        print("6 - Sair")
+        print("6 - Verificar Correlação entre Indicadores e Preço de Fechamento")
+        print("7 - Sair")
 
         escolha = input("Digite o número da opção desejada: ")
 
@@ -428,6 +485,11 @@ def menu():
             carregar_e_executar_modelo_da_pasta(X_test_scaled, y_test_scaled, scaler, 'teste/modelos')
 
         elif escolha == '6':
+            print("Verificando Correlação entre Indicadores e Preço de Fechamento...")
+            df_com_indicadores = adicionar_indicadores(df)
+            calcular_e_exibir_correlacao(df_com_indicadores)
+
+        elif escolha == '7':
             print("Saindo...")
             break
         else:
