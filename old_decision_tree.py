@@ -4,12 +4,10 @@ import numpy as np
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, cohen_kappa_score
 from sklearn.model_selection import train_test_split, TimeSeriesSplit
 from sklearn.tree import DecisionTreeClassifier, plot_tree
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
+from sklearn.preprocessing import LabelEncoder
 import matplotlib.pyplot as plt
 from sklearn.model_selection import cross_val_score
 from collections import Counter
-from keras.models import Sequential, load_model
-from keras.layers import LSTM, Dense, Dropout
 
 # Funções para calcular indicadores técnicos
 def SMA(data, window):
@@ -154,61 +152,39 @@ def treinar_avaliar_arvore_time_series(X, y, feature_names, class_weights):
         plt.savefig('arvore_decisao_split.png')
         plt.show()
 
-# Função para treinar e avaliar a árvore de decisão, gerando probabilidades
+# Função para treinar e avaliar a árvore de decisão com base em TimeSeriesSplit e obter as probabilidades
 def treinar_avaliar_arvore_e_probabilidades(X, y, feature_names, class_weights):
-    tscv = TimeSeriesSplit(n_splits=5)
-    
+    # Definir o TimeSeriesSplit para treino e teste baseados em séries temporais
+    tscv = TimeSeriesSplit(n_splits=5)  # Definir o número de divisões temporais
+
     for train_index, test_index in tscv.split(X):
-        X_train, X_test = X.iloc[train_index], X.iloc[test_index].copy()  # Usar .copy() para evitar "SettingWithCopyWarning"
+        X_train, X_test = X.iloc[train_index], X.iloc[test_index]
         y_train, y_test = y.iloc[train_index], y.iloc[test_index]
         
+        # Treinar a árvore de decisão
         clf = DecisionTreeClassifier(criterion="entropy", class_weight=class_weights, max_depth=5, min_samples_split=10, min_samples_leaf=5)
         clf.fit(X_train, y_train)
         
-        probas = clf.predict_proba(X_test)
+        # Fazer previsões e obter probabilidades
+        y_pred = clf.predict(X_test)
+        probas = clf.predict_proba(X_test)  # Obter as probabilidades das classes
         
-        # Adicionar probabilidades ao DataFrame de teste
-        X_test.loc[:, 'Prob_Buy'] = probas[:, 0]   # Usar .loc com .copy para evitar warnings
-        X_test.loc[:, 'Prob_Sell'] = probas[:, 1]
-        X_test.loc[:, 'Prob_Hold'] = probas[:, 2]
+        # Adicionar as probabilidades ao DataFrame de teste (para ser usado em outros modelos, como o LSTM)
+        X_test['Prob_Buy'] = probas[:, 0]   # Probabilidade da classe 'Buy'
+        X_test['Prob_Sell'] = probas[:, 1]  # Probabilidade da classe 'Sell'
+        X_test['Prob_Hold'] = probas[:, 2]  # Probabilidade da classe 'Hold'
         
-        return X_test[['Prob_Buy', 'Prob_Sell', 'Prob_Hold']]
-
-# Criar o modelo LSTM ajustado para múltiplas features
-def criar_modelo_lstm(input_shape):
-    model = Sequential()
-    model.add(LSTM(units=70, return_sequences=True, input_shape=input_shape))
-    model.add(Dropout(0.4))
-    model.add(LSTM(units=70, return_sequences=False))
-    model.add(Dropout(0.4))
-    model.add(Dense(units=1))  # Saída para uma única previsão (preço futuro)
-    
-    model.compile(optimizer='adam', loss='mean_squared_error')
-    return model
-
-# Função para treinar e avaliar o modelo LSTM
-def avaliar_modelo_lstm(X, y, modelo):
-    previsoes = modelo.predict(X)
-    mse = np.mean(np.square(previsoes - y))
-    print(f'MSE do LSTM: {mse}')
-    return mse
-
-# Função para preparar janelas de entrada e saída para o LSTM
-def preparar_janelas_lstm(data, window_size=300):
-    X, y = [], []
-    for i in range(window_size, len(data)):
-        X.append(data[i-window_size:i, :])  # Últimos 'window_size' períodos
-        y.append(data[i, 0])  # Próximo valor de fechamento (ou outro target)
-    return np.array(X), np.array(y)
-
-# Função para normalizar os dados
-def normalizar_dados(df, colunas=None):
-    scaler = MinMaxScaler()
-    if colunas:
-        df[colunas] = scaler.fit_transform(df[colunas])
-    else:
-        df = scaler.fit_transform(df)
-    return df, scaler
+        # Avaliar o modelo
+        avaliar_modelo(y_test, y_pred)
+        
+        # Exibir as probabilidades obtidas (opcional)
+        print("\nProbabilidades de classe para o conjunto de teste:\n", X_test[['Prob_Buy', 'Prob_Sell', 'Prob_Hold']].head())
+        
+        # Gerar e salvar a imagem da árvore
+        plt.figure(figsize=(20,10))
+        plot_tree(clf, feature_names=feature_names, class_names=['Buy', 'Sell', 'Hold'], filled=True, fontsize=10)
+        plt.savefig('arvore_decisao_prob.png')
+        plt.show()
 
 
 # Carregar dados (ajustar para o caminho dos arquivos do artigo)
@@ -231,7 +207,7 @@ df_sensex['%D'] = Stochastic_D(df_sensex)
 
 # Tratar dados ausentes
 df_sensex.fillna(method='bfill', inplace=True)
-df_lstm = df_sensex.copy()
+
 # Imprimir o DataFrame após o cálculo dos indicadores técnicos
 print("\nDataFrame com Indicadores Técnicos:\n", df_sensex[['SMA_21', 'WMA_65', 'EMA_100', 'PPO', 'PAIN', 'MACD', 'RSI', 'Momentum', '%K', '%D']].head())
 
@@ -259,22 +235,22 @@ print("\nDataFrame com Tendências Textuais:\n", df_sensex[['SMA_21_trend', 'WMA
 df_sensex['Action'] = definir_acao(df_sensex[['SMA_21_trend', 'WMA_65_trend', 'EMA_100_trend', 'PPO_trend', 'PAIN_trend', 'MACD_trend', 'RSI_trend', 'Momentum_trend', '%K_trend', '%D_trend']])
 
 colunas_para_dropar = ['Signal_Line','Adj Close','Date','SMA_21', 'WMA_65', 'EMA_100', 'PPO', 'PAIN', 'MACD', 'RSI', 'Momentum', '%K', '%D','Open','Close', 'High', 'Low', 'Volume']  # Exemplo: vamos dropar estas colunas para um teste
-df_sense = df_sensex.drop(columns=colunas_para_dropar)
+df_sensex = df_sensex.drop(columns=colunas_para_dropar)
 
 print("Distribuição das classes:")
-print(Counter(df_sense['Action']))
-class_counts = Counter(df_sense['Action'])
-total_samples = len(df_sense['Action'])
+print(Counter(df_sensex['Action']))
+class_counts = Counter(df_sensex['Action'])
+total_samples = len(df_sensex['Action'])
 
 # Pesos para cada classe
 class_weights = {cls: total_samples / count for cls, count in class_counts.items()}
 print("Pesos calculados para as classes:", class_weights)
 
-print("\nDataFrame:\n", df_sense.head())
+print("\nDataFrame:\n", df_sensex.head())
 
 # Modelo com valores textuais
-X_textual = df_sense[['SMA_21_trend', 'WMA_65_trend', 'EMA_100_trend', 'PPO_trend', 'PAIN_trend', 'MACD_trend', 'RSI_trend', 'Momentum_trend', '%K_trend', '%D_trend']]
-y_textual = df_sense['Action']
+X_textual = df_sensex[['SMA_21_trend', 'WMA_65_trend', 'EMA_100_trend', 'PPO_trend', 'PAIN_trend', 'MACD_trend', 'RSI_trend', 'Momentum_trend', '%K_trend', '%D_trend']]
+y_textual = df_sensex['Action']
 
 # Convertendo valores textuais para numéricos
 label_encoder = LabelEncoder()
@@ -292,55 +268,4 @@ print("\nModelo com valores textuais:")
 #treinar_avaliar_arvore_time_series(X_textual, y_textual, X_textual.columns, class_weights)
 
 # Treinar e avaliar a árvore de decisão, obtendo as probabilidades
-#treinar_avaliar_arvore_e_probabilidades(X_textual, y_textual, X_textual.columns, class_weights)
-
-
-# Adicionar as probabilidades da árvore de decisão ao DataFrame
-probabilidades = treinar_avaliar_arvore_e_probabilidades(X_textual, y_textual, X_textual.columns, class_weights=None)
-
-# Concatenar as probabilidades no DataFrame original
-df_lstm = pd.concat([df_lstm, probabilidades], axis=1)
-#coluns =['Date','Action','SMA_21_trend', 'WMA_65_trend', 'EMA_100_trend', 'PPO_trend', 'PAIN_trend', 'MACD_trend', 'RSI_trend', 'Momentum_trend', '%K_trend', '%D_trend']
-df_lstm.drop(columns='Date', inplace=True)
-# Preencher valores ausentes
-df_lstm.fillna(method='bfill', inplace=True)
-print(df_lstm.head())
-# **Normalizar todas as colunas do DataFrame para o LSTM**
-# Vamos incluir todas as colunas numéricas, incluindo as colunas de probabilidades
-df_lstm_normalizado, scaler = normalizar_dados(df_lstm)
-
-# Preparar as janelas de dados para o LSTM sem probabilidades
-X_lstm_sem_probas = []
-y_lstm_sem_probas = []
-
-for i in range(300, len(df_lstm_normalizado)):
-    X_lstm_sem_probas.append(df_lstm_normalizado[i-300:i, 0])  # Primeira coluna, assumida como 'Close' após normalização
-    y_lstm_sem_probas.append(df_lstm_normalizado[i, 0])
-
-X_lstm_sem_probas = np.array(X_lstm_sem_probas)
-y_lstm_sem_probas = np.array(y_lstm_sem_probas)
-
-# Preparar as janelas de dados para o LSTM com probabilidades
-X_lstm_com_probas = []
-for i in range(300, len(df_lstm_normalizado)):
-    X_lstm_com_probas.append(df_lstm_normalizado[i-300:i, -3:])  # Últimas 3 colunas, que são as probabilidades
-
-X_lstm_com_probas = np.array(X_lstm_com_probas)
-
-# Ajustar o shape para o LSTM
-X_lstm_sem_probas = np.reshape(X_lstm_sem_probas, (X_lstm_sem_probas.shape[0], X_lstm_sem_probas.shape[1], 1))
-X_lstm_com_probas = np.reshape(X_lstm_com_probas, (X_lstm_com_probas.shape[0], X_lstm_com_probas.shape[1], 3))
-
-# Criar os modelos LSTM
-input_shape_sem_probas = (300, 1)
-input_shape_com_probas = (300, 3)
-
-modelo_lstm_sem_probas = criar_modelo_lstm(input_shape_sem_probas)
-modelo_lstm_com_probas = criar_modelo_lstm(input_shape_com_probas)
-
-# Avaliar ambos os modelos
-mse_sem_probas = avaliar_modelo_lstm(X_lstm_sem_probas, y_lstm_sem_probas, modelo_lstm_sem_probas)
-mse_com_probas = avaliar_modelo_lstm(X_lstm_com_probas, y_lstm_sem_probas, modelo_lstm_com_probas)
-
-print(f"MSE sem probabilidades: {mse_sem_probas}")
-print(f"MSE com probabilidades: {mse_com_probas}")
+treinar_avaliar_arvore_e_probabilidades(X_textual, y_textual, X_textual.columns, class_weights)
