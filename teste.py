@@ -1,174 +1,154 @@
 import pandas as pd
-
-df = pd.read_csv('output/yahoo/ITUB4/month/ITUB4_month_2010_2020.csv')
-# DataFrame com os preços do ativo
-df['SMA_50'] = df['close'].rolling(window=50).mean()  # Média Móvel de 50 períodos
-df['SMA_200'] = df['close'].rolling(window=200).mean()  # Média Móvel de 200 períodos
-
-import ta
-
-# DataFrame com os preços
-df['RSI'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
-
-df['SMA_20'] = df['close'].rolling(window=20).mean()
-df['stddev'] = df['close'].rolling(window=20).std()
-df['Upper_Band'] = df['SMA_20'] + (df['stddev'] * 2)
-df['Lower_Band'] = df['SMA_20'] - (df['stddev'] * 2)
-
-df['EMA_12'] = df['close'].ewm(span=12, adjust=False).mean()
-df['EMA_26'] = df['close'].ewm(span=26, adjust=False).mean()
-df['MACD'] = df['EMA_12'] - df['EMA_26']
-df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
-
-from sklearn.tree import DecisionTreeClassifier
+import numpy as np
 from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from keras.models import Sequential
+from keras.layers import LSTM, Dropout, Dense
+from sklearn.preprocessing import MinMaxScaler
 
-# Defina suas features (RSI, MACD, Bollinger Bands, etc.) e a label (compra ou não)
-X = df[['RSI', 'MACD', 'Upper_Band', 'Lower_Band']]  # Seus indicadores
-y = df['buy_signal']  # Define um sinal de compra como target (0 ou 1)
+# Funções para calcular indicadores técnicos
+def SMA(data, window):
+    return data['Close'].rolling(window=window).mean()
 
-# Divida os dados em treinamento e teste
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+def WMA(data, window):
+    weights = np.arange(1, window + 1)
+    return data['Close'].rolling(window=window).apply(lambda prices: np.dot(prices, weights) / weights.sum(), raw=True)
 
-# Treine o modelo de árvore de decisão
-model = DecisionTreeClassifier()
-model.fit(X_train, y_train)
+def EMA(data, window):
+    return data['Close'].ewm(span=window, adjust=False).mean()
 
-# Avalie a árvore de decisão
-accuracy = model.score(X_test, y_test)
-print(f'Accuracy: {accuracy}')
+def PPO(data, fast_period=12, slow_period=26):
+    fast_ema = EMA(data, fast_period)
+    slow_ema = EMA(data, slow_period)
+    return ((fast_ema - slow_ema) / slow_ema) * 100
 
+def PAIN(data):
+    return (data['Close'] - data['Open']) / (data['High'] - data['Low'])
 
+def MACD(data, fast_period=12, slow_period=26, signal_period=9):
+    fast_ema = EMA(data, fast_period)
+    slow_ema = EMA(data, slow_period)
+    macd_line = fast_ema - slow_ema
+    signal_line = macd_line.ewm(span=signal_period, adjust=False).mean()
+    return macd_line, signal_line
 
-import pandas as pd
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.model_selection import train_test_split
-import ta  # Biblioteca para indicadores técnicos
+def RSI(data, window=14):
+    delta = data['Close'].diff(1)
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    
+    avg_gain = gain.rolling(window=window).mean()
+    avg_loss = loss.rolling(window=window).mean()
 
-# Supondo que você tenha um DataFrame `df` com os preços de fechamento
-df['SMA_50'] = df['close'].rolling(window=50).mean()
-df['SMA_200'] = df['close'].rolling(window=200).mean()
-df['RSI'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
-df['EMA_12'] = df['close'].ewm(span=12, adjust=False).mean()
-df['EMA_26'] = df['close'].ewm(span=26, adjust=False).mean()
-df['MACD'] = df['EMA_12'] - df['EMA_26']
-df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
-# Bollinger Bands
-df['SMA_20'] = df['close'].rolling(window=20).mean()
-df['stddev'] = df['close'].rolling(window=20).std()
-df['Upper_Band'] = df['SMA_20'] + (df['stddev'] * 2)
-df['Lower_Band'] = df['SMA_20'] - (df['stddev'] * 2)
+def Momentum(data, window=1):
+    return data['Close'] - data['Close'].shift(window)
 
-# Sinal de compra (simplificação: pode ser qualquer regra)
-df['buy_signal'] = (df['RSI'] < 30).astype(int)  # Exemplo: compra quando RSI < 30
+def Stochastic_K(data, window=14):
+    lowest_low = data['Low'].rolling(window=window).min()
+    highest_high = data['High'].rolling(window=window).max()
+    return 100 * (data['Close'] - lowest_low) / (highest_high - lowest_low)
 
-# Defina as features (indicadores) e o label (buy_signal)
-X = df[['RSI', 'MACD', 'Upper_Band', 'Lower_Band']]  # Indicadores
-y = df['buy_signal']  # Sinal de compra (0 ou 1)
-
-# Divisão dos dados em treino e teste
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# Treinamento da árvore de decisão
-model = DecisionTreeClassifier()
-model.fit(X_train, y_train)
-
-# Avaliação do modelo
-accuracy = model.score(X_test, y_test)
-print(f'Accuracy with indicators only: {accuracy}')
-
-
-
-# Suponha que você já tenha as previsões do LSTM no DataFrame
-# df['lstm_prediction'] contém a previsão do LSTM para o preço futuro
-
-# Atualize as features para incluir a previsão do LSTM
-X_with_lstm = df[['RSI', 'MACD', 'Upper_Band', 'Lower_Band', 'lstm_prediction']]
-
-# Divisão dos dados em treino e teste
-X_train, X_test, y_train, y_test = train_test_split(X_with_lstm, y, test_size=0.2, random_state=42)
-
-# Treinamento da árvore de decisão com LSTM
-model_with_lstm = DecisionTreeClassifier()
-model_with_lstm.fit(X_train, y_train)
-
-# Avaliação do modelo com LSTM
-accuracy_with_lstm = model_with_lstm.score(X_test, y_test)
-print(f'Accuracy with indicators and LSTM prediction: {accuracy_with_lstm}')
+def Stochastic_D(data, window=3):
+    return Stochastic_K(data).rolling(window=window).mean()
 
 
 
+# Carregar dados (ajustar para o caminho dos arquivos do artigo)
+df_sensex = pd.read_csv('data-nse/sensex.csv')
+
+# Imprimir o dataframe carregado para verificar os dados
+print("\nDataFrame Original:\n", df_sensex.head())
+
+# Calcular indicadores técnicos
+df_sensex['SMA_21'] = SMA(df_sensex, 21)
+df_sensex['WMA_65'] = WMA(df_sensex, 65)
+df_sensex['EMA_100'] = EMA(df_sensex, 100)
+df_sensex['PPO'] = PPO(df_sensex)
+df_sensex['PAIN'] = PAIN(df_sensex)
+df_sensex['MACD'], df_sensex['Signal_Line'] = MACD(df_sensex)
+df_sensex['RSI'] = RSI(df_sensex)
+df_sensex['Momentum'] = Momentum(df_sensex, 1)
+df_sensex['%K'] = Stochastic_K(df_sensex)
+df_sensex['%D'] = Stochastic_D(df_sensex)
+
+# Tratar dados ausentes
+df_sensex.fillna(method='bfill', inplace=True)
 
 
+# Supondo que você tenha uma coluna 'Close' como variável alvo
+X = df_sensex[['SMA_21', 'WMA_65', 'EMA_100', 'PPO', 'PAIN', 'MACD', 'Signal_Line', 'RSI', 'Momentum', '%K', '%D']]
+y = df_sensex['Close']
+
+# Dividir os dados em treino e teste
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
 
 
+# Normalizar os dados
+scaler = MinMaxScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
 
+# Criar janelas para o LSTM
+window_size = 30
+def create_lstm_data(X, y, window_size):
+    X_lstm, y_lstm = [], []
+    for i in range(window_size, len(X)):
+        X_lstm.append(X[i-window_size:i])
+        y_lstm.append(y[i])
+    return np.array(X_lstm), np.array(y_lstm)
 
+X_train_lstm, y_train_lstm = create_lstm_data(X_train_scaled, y_train.values, window_size)
+X_test_lstm, y_test_lstm = create_lstm_data(X_test_scaled, y_test.values, window_size)
 
+# Reshape para [samples, time steps, features]
+X_train_lstm = np.reshape(X_train_lstm, (X_train_lstm.shape[0], X_train_lstm.shape[1], X_train_lstm.shape[2]))
+X_test_lstm = np.reshape(X_test_lstm, (X_test_lstm.shape[0], X_test_lstm.shape[1], X_test_lstm.shape[2]))
 
+# Construir o modelo LSTM
+model_lstm = Sequential()
+model_lstm.add(LSTM(70, return_sequences=True, input_shape=(X_train_lstm.shape[1], X_train_lstm.shape[2])))
+model_lstm.add(Dropout(0.4))
+model_lstm.add(LSTM(70, return_sequences=False))
+model_lstm.add(Dropout(0.4))
+model_lstm.add(Dense(1))
 
+model_lstm.compile(optimizer='adam', loss='mean_squared_error')
 
+# Treinar o modelo LSTM
+model_lstm.fit(X_train_lstm, y_train_lstm, epochs=200, batch_size=32, validation_data=(X_test_lstm, y_test_lstm))
 
+# Fazer previsões com o LSTM no conjunto de teste
+lstm_predictions = model_lstm.predict(X_test_lstm)
 
+# Fazer previsões com o modelo de Regressão Linear
+reg = LinearRegression()
+reg.fit(X_train, y_train)
+linear_predictions = reg.predict(X_test[window_size:])
 
+# Combinar previsões LSTM e Regressão Linear (Modelo Híbrido)
+hybrid_predictions = 0.5 * lstm_predictions.flatten() + 0.5 * linear_predictions
 
+# Avaliar as métricas
+rmse_lstm = np.sqrt(mean_squared_error(y_test_lstm, lstm_predictions))
+mae_lstm = mean_absolute_error(y_test_lstm, lstm_predictions)
 
+rmse_linear = np.sqrt(mean_squared_error(y_test[window_size:], linear_predictions))
+mae_linear = mean_absolute_error(y_test[window_size:], linear_predictions)
 
+rmse_hybrid = np.sqrt(mean_squared_error(y_test_lstm, hybrid_predictions))
+mae_hybrid = mean_absolute_error(y_test_lstm, hybrid_predictions)
 
+# Imprimir as métricas
+print(f"RMSE - Regressão Linear: {rmse_linear}")
+print(f"MAE - Regressão Linear: {mae_linear}")
 
-import pandas as pd
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.model_selection import train_test_split, cross_val_score, StratifiedKFold
-from sklearn.metrics import confusion_matrix, classification_report, f1_score
-import ta
+print(f"RMSE - LSTM: {rmse_lstm}")
+print(f"MAE - LSTM: {mae_lstm}")
 
-# Supondo que você tenha um DataFrame `df` com os preços de fechamento
-# Cálculo dos indicadores técnicos
-df['SMA_50'] = df['close'].rolling(window=50).mean()
-df['SMA_200'] = df['close'].rolling(window=200).mean()
-df['RSI'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
-df['EMA_12'] = df['close'].ewm(span=12, adjust=False).mean()
-df['EMA_26'] = df['close'].ewm(span=26, adjust=False).mean()
-df['MACD'] = df['EMA_12'] - df['EMA_26']
-df['Signal_Line'] = df['MACD'].ewm(span=9, adjust=False).mean()
-
-# Bollinger Bands
-df['SMA_20'] = df['close'].rolling(window=20).mean()
-df['stddev'] = df['close'].rolling(window=20).std()
-df['Upper_Band'] = df['SMA_20'] + (df['stddev'] * 2)
-df['Lower_Band'] = df['SMA_20'] - (df['stddev'] * 2)
-
-# Sinal de compra (simplificação: pode ser qualquer regra)
-df['buy_signal'] = (df['RSI'] < 30).astype(int)  # Exemplo: compra quando RSI < 30
-
-# Defina as features (indicadores) e o label (buy_signal)
-X = df[['RSI', 'MACD', 'Upper_Band', 'Lower_Band']]  # Indicadores técnicos
-y = df['buy_signal']  # Sinal de compra (0 ou 1)
-
-# Divida os dados em treino e teste
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# Treinamento da árvore de decisão
-model = DecisionTreeClassifier()
-
-# Validação cruzada com 5 dobras (StratifiedKFold para manter a distribuição de classes)
-skf = StratifiedKFold(n_splits=5)
-
-# Métricas com validação cruzada
-scores = cross_val_score(model, X_train, y_train, cv=skf, scoring='accuracy')
-print(f'Cross-validated Accuracy: {scores.mean()}')
-
-# Treinar o modelo nos dados de treino
-model.fit(X_train, y_train)
-
-# Previsões no conjunto de teste
-y_pred = model.predict(X_test)
-
-# Avaliação detalhada do modelo
-print(f"Confusion Matrix:\n{confusion_matrix(y_test, y_pred)}")
-print(f"Classification Report:\n{classification_report(y_test, y_pred)}")
-
-# Métrica F1
-f1 = f1_score(y_test, y_pred)
-print(f'F1-Score: {f1}')
+print(f"RMSE - Modelo Híbrido: {rmse_hybrid}")
+print(f"MAE - Modelo Híbrido: {mae_hybrid}")
