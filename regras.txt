@@ -992,3 +992,87 @@ parametros = [
     (64, 100, 0.5, 400), 
     (64, 100, 0.5, 500)
               ]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+1. Médias Móveis
+Média Móvel Simples (SMA):
+Períodos comuns: 10, 20, 50, 100, 200
+Uso: Identificar tendências de longo prazo e suporte/resistência dinâmicos.
+Média Móvel Exponencial (EMA):
+Períodos comuns: 9, 12, 20, 50, 100, 200
+Uso: Capturar tendências de curto prazo e reagir mais rapidamente a mudanças de preço.
+2. Bollinger Bands
+Período comum: 20
+Desvio padrão: 2
+Uso: Medir a volatilidade e identificar possíveis pontos de reversão nos preços.
+3. Índice de Força Relativa (RSI)
+Período comum: 14
+Uso: Medir a força dos movimentos de preços, identificar sobrecompra/sobrevenda (acima de 70 ou abaixo de 30).
+4. MACD (Moving Average Convergence Divergence)
+Períodos comuns: 12 (EMA rápida), 26 (EMA lenta), 9 (Linha de Sinal)
+Uso: Identificar mudanças na força, direção e momentum de uma tendência.
+5. Estocástico
+Períodos comuns: 14 (K), 3 (D)
+Uso: Identificar níveis de sobrecompra/sobrevenda e pontos de reversão de preço.
+6. ADX (Average Directional Index)
+Período comum: 14
+Uso: Medir a força da tendência, sem indicar a direção. ADX acima de 25 indica uma tendência forte.
+7. ATR (Average True Range)
+Período comum: 14
+Uso: Medir a volatilidade e ajudar na definição de stop-loss e alvos de preço.
+8. Volume
+Período comum: Não há um período definido para o volume, mas traders usam o volume para confirmar a força dos movimentos de preço.
+9. Oscilador de Chaikin
+Períodos comuns: 3 (rápido) e 10 (lento)
+Uso: Mede a acumulação/distribuição de volume para identificar a pressão de compra ou venda.
+10. Envelopes de Preço
+Período comum: 14 ou 20
+Percentual comum: 2% ou 3%
+Uso: Identificar níveis de suporte e resistência dinâmicos.
+11. SAR Parabólico
+Uso: Identificar pontos de reversão de tendência. Quando o preço cruza o SAR, isso pode indicar uma inversão.
+12. Fibonacci Retracement
+Níveis comuns: 38.2%, 50%, 61.8%
+Uso: Identificar possíveis níveis de suporte e resistência com base em retrações de movimentos de preços anteriores.
+13. Momentum
+Período comum: 10 ou 14
+Uso: Medir a velocidade de mudança dos preços, identificando a força de uma tendência.
+14. CCI (Commodity Channel Index)
+Período comum: 20
+Uso: Medir desvios de preços em relação à média para identificar condições de sobrecompra e sobrevenda.
+15. VWAP (Volume Weighted Average Price)
+Período comum: Utilizado no intraday
+Uso: Média ponderada pelo volume para identificar o preço médio de negociação e pontos de suporte e resistência intradiários.
+16. Oscilador de Aroon
+Período comum: 25
+Uso: Medir a força de uma tendência e identificar possíveis reversões de tendência.
+17. Williams %R
+Período comum: 14
+Uso: Semelhante ao estocástico, mede sobrecompra e sobrevenda, variando de 0 a -100.
+18. Ichimoku Cloud (Ichimoku Kinko Hyo)
+Períodos comuns: 9 (Tenkan-sen), 26 (Kijun-sen), 52 (Senkou Span A e B)
+Uso: Identificar suporte, resistência, momentum e direção de tendência.
+19. Linha de Acumulação/Distribuição (A/D Line)
+Uso: Mede o fluxo de dinheiro para dentro e fora de um ativo, usando o volume e os preços para determinar a pressão de compra ou venda.
+20. Oscilador de Preço Percentual (PPO)
+Períodos comuns: 12, 26
+Uso: Similar ao MACD, mas mede a diferença percentual entre duas EMAs.
