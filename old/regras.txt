@@ -1076,3 +1076,18 @@ Uso: Mede o fluxo de dinheiro para dentro e fora de um ativo, usando o volume e 
 20. Oscilador de Preço Percentual (PPO)
 Períodos comuns: 12, 26
 Uso: Similar ao MACD, mas mede a diferença percentual entre duas EMAs.
+
+
+
+
+
+
+
+dados dos hiperparametros
+batch_size = 16
+units = 70
+dropout = 0.4
+epochs = 50
+window_size = 100
+
+{'lstm': (59492.656059940586, 160.32582595840785, 0.004715493961974121, 0.9983909646802698, 243.91116427900667), 'regressao_linear': (17994.6356941897, 80.85287848370636, 0.002423890424240272, 0.999513318007378, 134.14408557290068), 'hibrido': (28097.391773484225, 104.37454685275253, 0.003094783837971876, 0.9992400793854239, 167.62276627440625)} 

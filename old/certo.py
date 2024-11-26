@@ -3,7 +3,7 @@ import numpy as np
 import random
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
-from keras.models import Sequential
+from keras.models import Sequential,load_model
 from keras.layers import LSTM, Dense, Dropout
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score, mean_absolute_percentage_error
@@ -100,6 +100,30 @@ def plot_comparacao_regressao_linear(y_real, y_pred_linear, save_path='comparaca
     print(f'Gráfico salvo em: {save_path}')
     plt.close()
 
+def plot_comparacao_lstm(y_real, y_pred_lstm, save_path='comparacao_lstm.png'):
+    """
+    Gera um gráfico comparativo entre os valores reais e os preditos pelo LSTM,
+    e salva o gráfico em um arquivo PNG.
+    
+    :param y_real: Valores reais do preço de fechamento.
+    :param y_pred_lstm: Valores preditos pelo LSTM.
+    :param save_path: Caminho para salvar a imagem do gráfico.
+    """
+    plt.figure(figsize=(10, 6))
+    
+    plt.plot(y_real, color='red', label='Preço Real')
+    plt.plot(y_pred_lstm, color='green', label='Previsão LSTM')
+    
+    plt.title('Comparação entre Preço Real e Previsão - LSTM')
+    plt.xlabel('Período')
+    plt.ylabel('Preço de Fechamento')
+    plt.legend()
+    
+    # Salvar o gráfico como imagem
+    plt.savefig(save_path)
+    print(f'Gráfico salvo em: {save_path}')
+    plt.close()
+
 # Função para plotar o gráfico de autocorrelação
 def plotar_autocorrelacao(autocorrelacoes):
     window_sizes = list(autocorrelacoes.keys())
@@ -154,6 +178,86 @@ def listar_modelos(pasta_modelos='modelos'):
     
     # Retorna a lista de arquivos de modelos
     return arquivos_modelos
+
+def listar_arquivos(pasta):
+    """
+    Lista todos os arquivos disponíveis na pasta especificada e permite ao usuário selecionar um.
+
+    :param pasta: Caminho da pasta onde os arquivos estão salvos.
+    :return: Caminho completo do arquivo selecionado.
+    """
+    if not os.path.exists(pasta):
+        print(f"A pasta '{pasta}' não foi encontrada.")
+        return None
+    
+    arquivos_disponiveis = [f for f in os.listdir(pasta) if os.path.isfile(os.path.join(pasta, f))]
+    
+    if len(arquivos_disponiveis) == 0:
+        print("Nenhum arquivo foi encontrado na pasta.")
+        return None
+
+    print("\nArquivos disponíveis:")
+    for idx, arquivo in enumerate(arquivos_disponiveis):
+        print(f"{idx + 1} - {arquivo}")
+    
+    escolha = int(input("Digite o número do arquivo que deseja selecionar: ")) - 1
+
+    if escolha < 0 or escolha >= len(arquivos_disponiveis):
+        print("Escolha inválida. Tente novamente.")
+        return None
+
+    arquivo_escolhido = arquivos_disponiveis[escolha]
+    caminho_arquivo = os.path.join(pasta, arquivo_escolhido)
+    
+    return caminho_arquivo
+
+def listar_pastas(pasta):
+    """
+    Lista todas as pastas disponíveis na pasta especificada e permite ao usuário navegar por elas.
+    
+    :param pasta: Caminho da pasta inicial.
+    :return: Caminho completo do arquivo CSV selecionado.
+    """
+    while True:
+        sub_pastas = [f for f in os.listdir(pasta) if os.path.isdir(os.path.join(pasta, f))]
+        arquivos_csv = [f for f in os.listdir(pasta) if os.path.isfile(os.path.join(pasta, f)) and f.endswith('.csv')]
+
+        if not sub_pastas and not arquivos_csv:
+            print(f"Nenhum arquivo CSV ou subpasta encontrado em: {pasta}")
+            return None
+        
+        if sub_pastas:
+            print("\nSubpastas disponíveis:")
+            for idx, sub_pasta in enumerate(sub_pastas):
+                print(f"{idx + 1} - {sub_pasta}")
+        
+        if arquivos_csv:
+            print("\nArquivos CSV disponíveis:")
+            for idx, arquivo_csv in enumerate(arquivos_csv):
+                print(f"{idx + 1 + len(sub_pastas)} - {arquivo_csv}")
+
+        escolha = input("\nDigite o número da subpasta ou arquivo CSV que deseja selecionar (ou 'sair' para cancelar): ")
+
+        if escolha.lower() == 'sair':
+            return None
+
+        try:
+            escolha = int(escolha) - 1
+        except ValueError:
+            print("Escolha inválida. Tente novamente.")
+            continue
+
+        if escolha < len(sub_pastas):
+            # Escolher uma subpasta
+            pasta_escolhida = sub_pastas[escolha]
+            pasta = os.path.join(pasta, pasta_escolhida)
+        elif escolha < len(sub_pastas) + len(arquivos_csv):
+            # Escolher um arquivo CSV
+            arquivo_escolhido = arquivos_csv[escolha - len(sub_pastas)]
+            caminho_arquivo = os.path.join(pasta, arquivo_escolhido)
+            return caminho_arquivo
+        else:
+            print("Escolha inválida. Tente novamente.")
 
 # Função para salvar o modelo treinado em um diretório específico
 def salvar_modelo(model, batch_size, units, dropout, window_size, pasta='modelos', descricao=''):
@@ -325,30 +429,126 @@ def carregar_e_executar_modelo_da_pasta(X_test, y_test, scaler, pasta_modelos='m
         print(f"Carregando o modelo LSTM: {modelo_escolhido}")
         model = load_model(caminho_modelo)
         y_pred = model.predict(X_test)
+        # Inverter a normalização para os valores preditos e reais
+        y_pred_inverted = scaler.inverse_transform(y_pred.reshape(-1, 1))
+        y_real_test_inverted = scaler.inverse_transform(y_test.reshape(-1, 1))
+        
+        # Calcular as métricas
+        mse = mean_squared_error(y_real_test_inverted, y_pred_inverted)
+        mae = mean_absolute_error(y_real_test_inverted, y_pred_inverted)
+        mape = mean_absolute_percentage_error(y_real_test_inverted, y_pred_inverted)
+        r2 = r2_score(y_real_test_inverted, y_pred_inverted)
+        rmse = np.sqrt(mse)
+        
+        print(f'LSTM - MSE: {mse}, MAE: {mae}, MAPE: {mape}, R2: {r2}, RMSE: {rmse}')
+        
+        # Gerar o gráfico correto para LSTM
+        plot_comparacao_lstm(y_real_test_inverted, y_pred_inverted, save_path=f'comparacao_lstm_{modelo_escolhido}.png')
+        print(f'Gráfico de comparação para o modelo LSTM {modelo_escolhido.upper()} gerado.')
+    
     elif caminho_modelo.endswith('.pkl'):
         print(f"Carregando o modelo de Regressão Linear: {modelo_escolhido}")
         model = joblib.load(caminho_modelo)
         X_test_flat = X_test.reshape(X_test.shape[0], -1)  # Achatar para regressão linear
         y_pred = model.predict(X_test_flat)
+        # Inverter a normalização para os valores preditos e reais
+        y_pred_inverted = scaler.inverse_transform(y_pred.reshape(-1, 1))
+        y_real_test_inverted = scaler.inverse_transform(y_test.reshape(-1, 1))
+        
+        # Calcular as métricas
+        mse = mean_squared_error(y_real_test_inverted, y_pred_inverted)
+        mae = mean_absolute_error(y_real_test_inverted, y_pred_inverted)
+        mape = mean_absolute_percentage_error(y_real_test_inverted, y_pred_inverted)
+        r2 = r2_score(y_real_test_inverted, y_pred_inverted)
+        rmse = np.sqrt(mse)
+        
+        print(f'Regressão Linear - MSE: {mse}, MAE: {mae}, MAPE: {mape}, R2: {r2}, RMSE: {rmse}')
+        
+        # Gerar o gráfico correto para Regressão Linear
+        plot_comparacao_regressao_linear(y_real_test_inverted, y_pred_inverted, save_path=f'comparacao_regressao_linear_{modelo_escolhido}.png')
+        print(f'Gráfico de comparação para o modelo de Regressão Linear {modelo_escolhido.upper()} gerado.')
+    
     else:
         print("Tipo de modelo não suportado.")
         return
-    
-    # Inverter a normalização para os valores preditos e reais
-    y_pred_inverted = scaler.inverse_transform(y_pred.reshape(-1, 1))
-    y_real_test_inverted = scaler.inverse_transform(y_test.reshape(-1, 1))
-    
-    mse = mean_squared_error(y_real_test_inverted, y_pred_inverted)
-    mae = mean_absolute_error(y_real_test_inverted, y_pred_inverted)
-    mape = mean_absolute_percentage_error(y_real_test_inverted, y_pred_inverted)
-    r2 = r2_score(y_real_test_inverted, y_pred_inverted)
-    rmse = np.sqrt(mse)
 
-    print(f'Modelo {modelo_escolhido.upper()} - MSE: {mse}, MAE: {mae}, MAPE: {mape}, R2: {r2}, RMSE: {rmse}')
+def testar_com_novos_dados(pasta_modelos='modelos', pasta_dados='output', scaler=None, window_size=300):
+    """
+    Carrega um modelo e uma nova base de dados e realiza previsões.
+
+    :param pasta_modelos: Caminho da pasta onde os modelos estão salvos.
+    :param pasta_dados: Caminho da pasta onde as bases de dados estão salvas.
+    :param scaler: Scaler usado para normalizar/desnormalizar os dados.
+    """
+    # Listar e selecionar o modelo
+    caminho_modelo = listar_arquivos(pasta_modelos)
+    if not caminho_modelo:
+        return
     
-    # Gerar gráfico comparativo
-    plot_comparacao(y_real_test_inverted, y_pred_inverted, y_pred_inverted, save_path=f'comparacao_{modelo_escolhido}.png')
-    print(f'Gráfico de comparação para o modelo {modelo_escolhido.upper()} gerado.')
+    # Listar e selecionar a base de dados, navegando pelas pastas
+    caminho_base_dados = listar_pastas(pasta_dados)
+    if not caminho_base_dados:
+        return
+    
+    # Carregar os dados
+    dados_novos = pd.read_csv(caminho_base_dados)['close'].values
+    
+    # Carregar o modelo
+    if caminho_modelo.endswith('.h5'):
+        print(f"Carregando o modelo LSTM de {caminho_modelo}")
+        model = load_model(caminho_modelo)
+        
+        # Normalizar os novos dados
+        dados_novos_scaled = scaler.transform(dados_novos.reshape(-1, 1))
+        
+        # Preparar os dados para o formato 3D esperado pelo LSTM
+        window_size = model.input_shape[1]  # Pegando o tamanho da janela do modelo
+        X_novos = []
+        for i in range(window_size, len(dados_novos_scaled)):
+            X_novos.append(dados_novos_scaled[i-window_size:i])
+
+        X_novos = np.array(X_novos)
+
+    elif caminho_modelo.endswith('.pkl'):
+        print(f"Carregando o modelo de Regressão Linear de {caminho_modelo}")
+        model = joblib.load(caminho_modelo)
+        
+        # Normalizar os novos dados
+        dados_novos_scaled = scaler.transform(dados_novos.reshape(-1, 1))
+        
+        # Preparar os dados para o formato esperado pela Regressão Linear (1D)
+        window_size = window_size # Por exemplo, definir um tamanho de janela fixo para a regressão linear
+        X_novos = []
+        for i in range(window_size, len(dados_novos_scaled)):
+            X_novos.append(dados_novos_scaled[i-window_size:i])
+        
+        X_novos = np.array(X_novos).reshape(len(X_novos), -1)  # Achatar para regressão linear
+
+    else:
+        print("Tipo de modelo não suportado.")
+        return
+
+    # Fazer previsões com o modelo carregado
+    y_pred = model.predict(X_novos)
+
+    # Inverter a normalização para ver os valores reais
+    y_pred_inverted = scaler.inverse_transform(y_pred.reshape(-1, 1))
+
+    # Plotar os resultados
+    plt.figure(figsize=(10, 6))
+    plt.plot(dados_novos[window_size:], color='blue', label='Preços Reais')
+    plt.plot(y_pred_inverted, color='red', label='Previsão Modelo')
+    plt.title('Comparação entre Preços Reais e Previsão - Novos Dados')
+    plt.xlabel('Período')
+    plt.ylabel('Preço de Fechamento')
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+
+    # Salvar e mostrar o gráfico
+    plt.savefig('comparacao_novos_dados.png')
+    plt.show()
+    print(f'Gráfico salvo como "comparacao_novos_dados.png"')
 
 # Função principal para treinar o modelo LSTM, Regressão Linear e Híbrido
 def rodar_modelo(X_train, X_test, y_train, y_test,X_validation, y_validation, scaler, batch_size, units, dropout, epochs):
@@ -371,6 +571,9 @@ def rodar_modelo(X_train, X_test, y_train, y_test,X_validation, y_validation, sc
 
     print(f'Híbrido - MSE: {mse_hybrid}, MAE: {mae_hybrid}, MAPE: {mape_hybrid}, R2: {r2_hybrid}, RMSE: {rmse_hybrid}')
 
+   # Gerar gráfico comparativo para o LSTM e salvar a imagem
+    plot_comparacao_lstm(y_real_test_inverted, y_pred_lstm, save_path='comparacao_lstm.png')
+
     # Gerar gráfico comparativo para a Regressão Linear e salvar a imagem
     plot_comparacao_regressao_linear(y_real_test_inverted, y_pred_linear, save_path='comparacao_regressao_linear.png')
 
@@ -386,9 +589,9 @@ def rodar_modelo(X_train, X_test, y_train, y_test,X_validation, y_validation, sc
 # Parâmetros do modelo
 batch_size = 16
 units = 70
-dropout = 0.3
+dropout = 0.4
 epochs = 50
-window_size = 300
+window_size = 350
 
 # Carregar os dados
 data = [
@@ -457,7 +660,8 @@ def menu():
         print("4 - Gerar Matriz de Autocorrelação")
         print("5 - Carregar e Executar um Modelo Salvo")
         print("6 - Verificar Correlação entre Indicadores e Preço de Fechamento")
-        print("7 - Sair")
+        print("7 - Testar Modelo com Nova Base de Dados (ex: Preços Bitcoin 2024)")
+        print("8 - Sair")
 
         escolha = input("Digite o número da opção desejada: ")
 
@@ -476,7 +680,7 @@ def menu():
 
         elif escolha == '4':
             print("Gerando Matriz de Autocorrelação...")
-            lista_window_sizes = [50, 100, 150, 200, 250, 300]
+            lista_window_sizes = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
             autocorrelacoes = calcular_autocorrelacao(precos_fechamento, lista_window_sizes)
             plotar_autocorrelacao(autocorrelacoes)
 
@@ -490,6 +694,10 @@ def menu():
             calcular_e_exibir_correlacao(df_com_indicadores)
 
         elif escolha == '7':
+            print("Testar Modelo com Nova Base de Dados...")
+            testar_com_novos_dados('teste/modelos', 'output', scaler, window_size)
+
+        elif escolha == '8':
             print("Saindo...")
             break
         else:
