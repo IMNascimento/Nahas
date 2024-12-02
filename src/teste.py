@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 # Configurações
 window_size = 48  # Tamanho da janela
 start_date = "2024-11-14 00:00:00"  # Data inicial para buscar os dados
-scaler_path = "result/scaler/"
 model_path = "result/models/lstm_model_window_48.h5"
 
 # Função para carregar os dados do banco
@@ -38,7 +37,7 @@ def test_model(start_date):
     # Carregar o modelo e scaler
     model = load_model(model_path)
     processor = DataProcessor(window_size=window_size)
-    processor.load_scaler(scaler_path)
+    processor.load_scaler()
 
     # Carregar os dados do banco
     data = load_data_from_db(start_date)
