@@ -86,43 +86,41 @@ class DataProcessor:
         :param y: Conjunto de saídas.
         :return: Dados normalizados.
         """
-        # Ajusta o scaler_X nos dados de treino e normaliza
-        X_train_scaled = self.scaler_X.fit_transform(X.reshape(-1, X.shape[2]))  # Flatten para ajustar o scaler
+        print(f"Dimensões antes da normalização (X): {X.shape}, (y): {y.shape}")
         
-        # Normalizar o `y` de acordo com a forma
+        X_train_scaled = self.scaler_X.fit_transform(X.reshape(-1, X.shape[2]))
+        print(f"Dimensões após normalização e flatten de X: {X_train_scaled.shape}")
+        
         if len(y.shape) == 1:  # Caso seja um único valor à frente
             y_train_scaled = self.scaler_y.fit_transform(y.reshape(-1, 1))
         else:
-            # Flatten `y` adequadamente para steps_ahead > 1
             y_train_scaled = self.scaler_y.fit_transform(y.reshape(-1, y.shape[-1]))
 
-        # Redimensionar o `X_train_scaled` de volta ao seu formato original
-        X_train_scaled = X_train_scaled.reshape(X.shape)
+        print(f"Dimensões após normalização (y_train_scaled): {y_train_scaled.shape}")
 
+        X_train_scaled = X_train_scaled.reshape(X.shape)
+        print(f"Dimensões de X_train_scaled após reshape: {X_train_scaled.shape}")
         return X_train_scaled, y_train_scaled
 
     def apply_normalization(self, X, y):
-        """
-        Aplica a normalização nos dados de validação ou teste, ajustada com base nos dados de treino.
-        :param X: Dados de entrada 3D (samples, timesteps, features).
-        :param y: Valores alvo 2D (samples, 1 ou mais para steps_ahead).
-        :return: Dados de entrada normalizados (X_normalized) e valores alvo normalizados (y_normalized).
-        """
         try:
-            # Normalizar `X` com base no ajuste do treino
-            X_normalized = self.scaler_X.transform(X.reshape(-1, X.shape[2]))  # Flatten para ajustar o scaler
-            X_normalized = X_normalized.reshape(X.shape)  # Restaurar a forma original
-
-            # Normalizar o `y`
+            print(f"Dimensões antes da normalização em apply_normalization (X): {X.shape}, (y): {y.shape}")
+            X_normalized = self.scaler_X.transform(X.reshape(-1, X.shape[2]))
+            print(f"Dimensões após transform (X_normalized): {X_normalized.shape}")
+            
+            X_normalized = X_normalized.reshape(X.shape)
+            print(f"Dimensões após reshape em apply_normalization (X_normalized): {X_normalized.shape}")
+            
             if len(y.shape) == 1:
                 y_normalized = self.scaler_y.transform(y.reshape(-1, 1))
             else:
                 y_normalized = self.scaler_y.transform(y.reshape(-1, y.shape[-1]))
-
-            return X_normalized, y_normalized.reshape(y.shape)
             
+            print(f"Dimensões após transform (y_normalized): {y_normalized.shape}")
+            return X_normalized, y_normalized.reshape(y.shape)
         except ValueError as e:
-            raise ValueError(f"O MinMaxScaler foi ajustado com {self.scaler_X.n_features_in_} features, mas o X tem {X.shape[2]} features.")
+            print(f"Erro em apply_normalization: {e}")
+            raise
     
     def reshape_to_original_shape(self, X_scaled, original_shape):
         """
@@ -136,22 +134,22 @@ class DataProcessor:
 
     def inverse_transform(self, y_scaled):
         """
-        Desfaz a normalização dos dados de saída (y) e ajusta para o formato correto.
+        Reverte a normalização dos dados de saída (y) para o formato original.
+
+        Este método lida com arrays normalizados de uma ou duas dimensões,
+        restaurando os valores ao intervalo original definido no scaler.
+
+        :param y_scaled: Array normalizado (1D ou 2D) que será desnormalizado.
+        :return: Array desnormalizado no mesmo formato dimensional de entrada.
         """
-        # Verifica se o array é 1D (caso steps_ahead seja 1) e reformata para 2D
-        if len(y_scaled.shape) == 1:
-            y_scaled = y_scaled.reshape(-1, 1)
-        
-        # Desfaz a normalização
-        y_inversed = self.scaler_y.inverse_transform(y_scaled)
-        
-        # Se o y_scaled original era 1D, retorna a array como 1D novamente
-        if y_inversed.shape[1] == 1:
-            return y_inversed.flatten()  # Converte de volta para 1D
-        
+        if not isinstance(y_scaled, np.ndarray):
+            raise TypeError("y_scaled deve ser um array numpy.")
+        print(f"Dimensões antes de inverse_transform: {y_scaled.shape}")
+        y_inversed = self.scaler_y.inverse_transform(y_scaled.reshape(-1, y_scaled.shape[-1]))
+        print(f"Dimensões após inverse_transform: {y_inversed.shape}")
         return y_inversed
 
-    def save_scaler(self, path='result/scaler/scaler.pkl'):
+    def save_scaler(self, path='result/scaler/'):
         """
         Salva o scaler ajustado para uso futuro.
         """
@@ -165,7 +163,7 @@ class DataProcessor:
         joblib.dump(self.scaler_y, os.path.join(directory, 'scaler_y.pkl'))
         print(f"Scalers salvos em {directory}")
 
-    def load_scaler(self, path='result/scaler/scaler.pkl'):
+    def load_scaler(self, path='result/scaler/'):
         """
         Carrega os scalers salvos para X e y.
         """
