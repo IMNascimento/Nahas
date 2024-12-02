@@ -34,9 +34,15 @@ class CustomLSTMTrainer:
 
         # Adicionar as camadas LSTM configuradas
         for i, units in enumerate(self.layers_config):
-            # Se for a última camada ou única camada, não retorna sequência
-            return_sequences = i < len(self.layers_config) - 1
-            model.add(LSTM(units=units, return_sequences=return_sequences, input_shape=self.input_shape if i == 0 else None))
+            # Se for a primeira camada, define input_shape
+            if i == 0:
+                model.add(LSTM(units=units, return_sequences=True, input_shape=self.input_shape))
+            # Se for a última camada, não retorna sequência
+            elif i == len(self.layers_config) - 1:
+                model.add(LSTM(units=units, return_sequences=False))
+            # Para camadas intermediárias, retorna sequência
+            else:
+                model.add(LSTM(units=units, return_sequences=True))
             model.add(Dropout(self.dropout))
 
         # Adicionar camada de saída
@@ -57,6 +63,9 @@ class CustomLSTMTrainer:
         :param y_val: Labels de validação.
         :return: Modelo treinado.
         """
+
+        print(f"Dimensões de X_train: {X_train.shape}, y_train: {y_train.shape}")
+        print(f"Dimensões de X_val: {X_val.shape}, y_val: {y_val.shape}")
         model = self.build_model()
 
         # Configurar EarlyStopping para evitar overfitting

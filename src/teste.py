@@ -24,7 +24,7 @@ def load_data_from_db(start_date):
     data = pd.DataFrame(list(query.dicts()))
     if not data.empty:
         data['timestamp'] = pd.to_datetime(data['timestamp'])
-        return data[['id','timestamp', 'open', 'high', 'low', 'close', 'volume']]
+        return data[["open", "high", "low", "close", "volume"]]
     else:
         print("Nenhum dado encontrado no banco.")
         return None
@@ -46,7 +46,7 @@ def test_model(start_date):
         print("Dados insuficientes para realizar a previsão.")
         return
 
-    # Carregar dados do banco
+    # Converter timestamps para numérico (se necessário)
     if 'timestamp' in data.columns:
         data['timestamp'] = data['timestamp'].apply(lambda x: x.timestamp())
 
@@ -60,21 +60,23 @@ def test_model(start_date):
         real_value = data.iloc[i + window_size]['close']  # Valor real para a próxima hora
 
         # Normalizar e preparar os dados para o modelo
-        features = window[['id','timestamp', 'open', 'high', 'low', 'close', 'volume']].values
+        features = window[["open", "high", "low", "close", "volume"]].values  # Apenas features relevantes
+        print(f"TESTE: Dimensões da janela antes da previsão: {features.shape}")
         features_scaled = processor.scaler_X.transform(features)
+        print(f"TESTE: Dimensões após normalização: {features_scaled.shape}")
         X_input = features_scaled.reshape(1, features_scaled.shape[0], features_scaled.shape[1])
-
+        print(f"TESTE: Dimensões de entrada para o modelo: {X_input.shape}")
         # Fazer a previsão
         predicted_scaled = model.predict(X_input)
-        # Verificar a forma do array e desnormalizar corretamente
-        if predicted_scaled.ndim == 1:  # Caso seja 1D
-            predicted_value = processor.inverse_transform(predicted_scaled.reshape(-1, 1))[0, 0]
-        else:  # Caso seja 2D
-            predicted_value = processor.inverse_transform(predicted_scaled)[0, 0]
+        
+        print(f"TESTE: Dimensões do resultado da previsão escalada: {predicted_scaled.shape}")
+        # Verificar o formato de saída e desnormalizar corretamente
+        print(f"Formato de predicted_scaled: {predicted_scaled.shape}")
 
-        # Armazenar o valor real e o previsto
+        predicted_value = processor.inverse_transform(predicted_scaled)
+        print(f"TESTE: Valor previsto desnormalizado: {predicted_value}")
+
         results.append({
-            'timestamp': data.iloc[i + window_size]['timestamp'],
             'real_value': real_value,
             'predicted_value': predicted_value
         })
