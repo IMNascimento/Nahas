@@ -10,7 +10,6 @@ import matplotlib.pyplot as plt
 # Configurações
 WINDOW_SIZE = 48
 STEPS_AHEAD = 1
-SCALER_PATH = "result/scaler"
 MODEL_PATH = "result/models/lstm_model_window_48.h5"
 END_DATE = "2024-09-14 23:59:59"
 RELEVANT_COLUMNS = ["open", "high", "low", "close", "volume"]
@@ -50,7 +49,7 @@ def main():
     print(f"TREINO: Dimensões de X_train_scaled: {X_train_scaled.shape}, y_train_scaled: {y_train_scaled.shape}")
     print(f"TREINO: Dimensões de X_validation_scaled: {X_validation_scaled.shape}, y_validation_scaled: {y_validation_scaled.shape}")
     print(f"TREINO: Dimensões de X_test_scaled: {X_test_scaled.shape}, y_test_scaled: {y_test_scaled.shape}")
-    processor.save_scaler(path=SCALER_PATH)
+    processor.save_scaler()
 
     input_shape = (X_train_scaled.shape[1], X_train_scaled.shape[2])
     trainer = CustomLSTMTrainer(
@@ -66,7 +65,7 @@ def main():
     trainer.save_model(lstm_model, model_path=MODEL_PATH)
 
     y_pred_scaled = lstm_model.predict(X_test_scaled)
-    processor.load_scaler(path=SCALER_PATH)
+    processor.load_scaler()
     print(f"TREINO: Dimensões de y_pred_scaled: {y_pred_scaled.shape}")
     y_pred = processor.inverse_transform(y_pred_scaled)
     y_test = processor.inverse_transform(y_test_scaled)
