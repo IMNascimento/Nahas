@@ -4,11 +4,12 @@ from data.data_processing import DataProcessor
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
+import os
 
 # Configurações
-window_size = 48  # Tamanho da janela
+window_size = 48 # Tamanho da janela
 start_date = "2024-11-14 00:00:00"  # Data inicial para buscar os dados
-model_path = "result/models/lstm_model_window_48.h5"
+model_path = "result/models/model_dropout_0.3_batch_64_window_48_layers_[256, 128].h5"
 
 # Função para carregar os dados do banco
 def load_data_from_db(start_date):
@@ -28,6 +29,16 @@ def load_data_from_db(start_date):
         print("Nenhum dado encontrado no banco.")
         return None
 
+def save_results_to_csv(results_df, model_path):
+    """
+    Salva os resultados em um arquivo CSV com o nome baseado no modelo.
+    """
+    model_name = os.path.basename(model_path).replace(".h5", "")  # Extrai o nome do modelo sem extensão
+    output_path = f"result/csv/testes/{model_name}_results.csv"  # Define o caminho de saída
+    # Cria o diretório, se necessário
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    results_df.to_csv(output_path, index=False)  # Salva o DataFrame em CSV
+    print(f"Resultados salvos em: {output_path}")
 
 # Função para testar o modelo
 def test_model(start_date):
@@ -91,6 +102,5 @@ if results_df is not None:
     print(results_df.head())  # Exibir os primeiros resultados
     print(results_df.tail())  # Exibir os últimos resultados
 
-    # Opcional: Salvar os resultados em CSV
-    results_df.to_csv("test_results.csv", index=False)
-    print("Resultados salvos em test_results.csv")
+    # Salvar os resultados com base no nome do modelo
+    save_results_to_csv(results_df, model_path)
