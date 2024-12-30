@@ -11,6 +11,8 @@ from keras.callbacks import EarlyStopping
 from models.db.model_binance import HourlyQuote
 from data.data_gpu_processing import DataProcessorGPU
 from models.lstm_gpu import CustomLSTMTrainerGPU
+from optimization.grid_search import GridSearch
+
 
 # Configurações
 WINDOW_SIZE = 48
@@ -156,33 +158,107 @@ def train_model(
     print(f"Resultados salvos em: {csv_output_path}")
 
 
+def model_trainer(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, **config):
+    """
+    Função que treina o modelo LSTM com base em 'config' e retorna a métrica.
+    
+    :param X_train_scaled, y_train_scaled: Dados normalizados de treino
+    :param X_val_scaled, y_val_scaled: Dados normalizados de validação
+    :param config: Dicionário de hiperparâmetros (dropout, batch_size, epochs, etc.)
+    :return: float -> valor da métrica (por exemplo, val_loss) ao final do treino
+    """
+    
+    # Extraímos os hiperparâmetros do config
+    dropout = config.get('dropout', 0.2)
+    batch_size = config.get('batch_size', 16)
+    epochs = config.get('epochs', 50)
+    patience = config.get('patience', 5)
+    layers_config = config.get('layers_config', [64, 32])
+    
+    # input_shape deve vir do shape de X_train_scaled
+    # (samples, timesteps, features)
+    input_shape = (X_train_scaled.shape[1], X_train_scaled.shape[2])
 
+    trainer = CustomLSTMTrainerGPU(
+        input_shape=input_shape,
+        layers_config=layers_config,
+        dropout=dropout,
+        batch_size=batch_size,
+        epochs=epochs,
+        patience=patience
+    )
+
+    # Constrói o modelo
+    model = trainer.build_model()
+
+    # EarlyStopping para pegar o melhor modelo (você pode ajustar)
+    early_stopping = EarlyStopping(
+        monitor='val_loss',
+        patience=patience,
+        restore_best_weights=True
+    )
+
+    # Treinamento (sem forçar GPU específica aqui — opcional)
+    history = model.fit(
+        X_train_scaled, y_train_scaled,
+        validation_data=(X_val_scaled, y_val_scaled),
+        epochs=epochs,
+        batch_size=batch_size,
+        callbacks=[early_stopping],
+        verbose=1  # silencioso
+    )
+
+    # Valor final de val_loss
+    val_loss = history.history['val_loss'][-1]
+    return val_loss
 
 
 if __name__ == "__main__":
-    configurations = [
-        {"dropout": 0.2, "batch_size": 16,"epochs": 50, "layers_config": [64, 32], "window_size": 48,"patience": 5},
-        {"dropout": 0.2, "batch_size": 16,"epochs": 50, "layers_config": [64, 32], "window_size": 72,"patience": 5},
-        # ...
-        # Remova ou adicione quantas configurações quiser
-    ]
+    data_df = load_data_from_db(END_DATE)
+    if data_df.empty:
+        raise ValueError("Nenhum dado foi recuperado do banco de dados.")
 
-    for config in configurations:
-        csv_output_path = f"result/csv/treinos/treino_dropout_{config['dropout']}_batch_{config['batch_size']}_window_{config['window_size']}_layers_{config['layers_config']}.csv"
-        model_path = f"result/models/model_dropout_{config['dropout']}_batch_{config['batch_size']}_window_{config['window_size']}_layers_{config['layers_config']}.h5"
-        plot_output_path = f"result/graficos/treinos/model_dropout_{config['dropout']}_batch_{config['batch_size']}_window_{config['window_size']}_layers_{config['layers_config']}.png"
-        
-        try:
-            train_model(
-                dropout=config["dropout"],
-                batch_size=config["batch_size"],
-                epochs=config["epochs"],
-                patience=config["patience"],
-                layers_config=config["layers_config"],
-                window_size=config["window_size"],
-                csv_output_path=csv_output_path,
-                model_path=model_path,
-                plot_output_path=plot_output_path
-            )
-        except Exception as e:
-            print(f"Erro ao treinar o modelo com configuração {config}: {e}")
+    # Mantemos apenas colunas relevantes
+    data_df = data_df[RELEVANT_COLUMNS]
+
+    # Cria instância do DataProcessorGPU
+    processor = DataProcessorGPU(window_size=48)  # window_size default
+    # Nesse grid search, iremos alterar window_size dentro do param_grid se quisermos
+
+    # Define o param_grid para GridSearch
+    param_grid = {
+        "dropout": [0.2, 0.3, 0.4],
+        "batch_size": [16, 32, 64, 128],
+        "epochs": [50],
+        "patience": [5],
+        "layers_config": [
+            [64, 32], [128, 64], [256, 128], [128, 64, 32], [256, 128, 64], [512, 256, 128],
+            [64, 64], [128, 128], [256, 256], [128, 128, 128], [256, 256, 256], [512, 512, 512],
+            [64, 64, 32, 32], [128, 128, 64, 64], [256, 256, 128, 128], [512, 512, 256, 256]
+        ],
+        "window_size": [48, 72, 96, 120]
+    }
+
+
+    # Instancia o GridSearch
+    # Vamos usar 'loss' (val_loss) como métrica para minimizar
+    grid = GridSearch(
+        model_trainer=model_trainer,
+        param_grid=param_grid,
+        scoring='loss',
+        verbose=2
+    )
+
+    # Executa a busca
+    results = grid.search(
+        data_processor=processor,
+        data_df=data_df,
+        coluna_alvo=TARGET_COLUMN,
+        steps_ahead=STEPS_AHEAD
+    )
+
+    print("\n===== RESULTADOS DO GRID SEARCH =====")
+    print("Melhores parâmetros:", results['best_params'])
+    print("Melhor perda (loss):", results['best_score'])
+    print("\nTabela de resultados:")
+    print(results['results'])
