@@ -1,5 +1,6 @@
 from peewee import Model, MySQLDatabase, FloatField, DateTimeField
 from config.settings import Settings
+import pandas as pd
 
 # Configuração do banco de dados MySQL
 db = MySQLDatabase(
@@ -22,6 +23,39 @@ class HourlyQuote(BaseModel):
     low = FloatField()
     close = FloatField()
     volume = FloatField()
+
+    def get_to_date(end_date):
+        """
+        Carrega os dados até uma data específica do banco de dados.
+        """
+        query = (HourlyQuote
+                .select()
+                .where(HourlyQuote.timestamp <= end_date)
+                .order_by(HourlyQuote.timestamp))
+        data = pd.DataFrame(list(query.dicts()))
+        if not data.empty:
+            data['timestamp'] = pd.to_datetime(data['timestamp'])
+            return data
+        else:
+            print("Nenhum dado encontrado no banco.")
+            return pd.DataFrame()
+    
+    def get_from_date(start_date):
+        """
+        Carrega os dados a partir de uma data específica do banco de dados.
+        """
+        query = (HourlyQuote
+                .select()
+                .where(HourlyQuote.timestamp >= start_date)
+                .order_by(HourlyQuote.timestamp))
+        
+        data = pd.DataFrame(list(query.dicts()))
+        if not data.empty:
+            data['timestamp'] = pd.to_datetime(data['timestamp'])
+            return data[["open", "high", "low", "close", "volume"]]
+        else:
+            print("Nenhum dado encontrado no banco.")
+            return None
 
 # Defina o modelo para cotações diárias
 class DailyQuote(BaseModel):
@@ -53,3 +87,7 @@ class MonthlyQuote(BaseModel):
 db.connect()
 db.create_tables([HourlyQuote, DailyQuote, WeeklyQuote, MonthlyQuote])
 db.close()
+
+
+
+
