@@ -11,23 +11,6 @@ window_size = 48 # Tamanho da janela
 start_date = "2024-11-14 00:00:00"  # Data inicial para buscar os dados
 model_path = "result/models/model_dropout_0.3_batch_64_window_48_layers_[256, 128].h5"
 
-# Função para carregar os dados do banco
-def load_data_from_db(start_date):
-    """
-    Carrega os dados a partir de uma data específica do banco de dados.
-    """
-    query = (HourlyQuote
-             .select()
-             .where(HourlyQuote.timestamp >= start_date)
-             .order_by(HourlyQuote.timestamp))
-    
-    data = pd.DataFrame(list(query.dicts()))
-    if not data.empty:
-        data['timestamp'] = pd.to_datetime(data['timestamp'])
-        return data[["open", "high", "low", "close", "volume"]]
-    else:
-        print("Nenhum dado encontrado no banco.")
-        return None
 
 def save_results_to_csv(results_df, model_path):
     """
@@ -51,7 +34,7 @@ def test_model(start_date):
     processor.load_scaler()
 
     # Carregar os dados do banco
-    data = load_data_from_db(start_date)
+    data = HourlyQuote.get_from_date(start_date)
     if data is None or len(data) < window_size:
         print("Dados insuficientes para realizar a previsão.")
         return

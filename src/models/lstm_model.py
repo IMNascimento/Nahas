@@ -2,11 +2,19 @@ from keras.models import Sequential, load_model
 from keras.layers import LSTM, Dense, Dropout
 from keras.callbacks import EarlyStopping
 import os
-import joblib
-import numpy as np
 
 class CustomLSTMTrainer:
-    def __init__(self, input_shape, layers_config=None, dropout=None, batch_size=None, epochs=None, patience=None):
+    def __init__(
+        self, 
+        input_shape,
+        layers_config=None,
+        dropout=None,
+        batch_size=None,
+        epochs=None,
+        patience=None,
+        loss_fn="mean_squared_error",  
+        metrics=None                    
+    ):
         """
         Inicializa o treinador LSTM personalizado.
 
@@ -16,13 +24,20 @@ class CustomLSTMTrainer:
         :param batch_size: Tamanho do lote para o treinamento.
         :param epochs: Número de épocas para o treinamento.
         :param patience: Número de épocas sem melhora na validação antes de parar.
+        :param loss_fn: Pode ser uma string reconhecida pelo Keras 
+                        (ex. 'mse', 'mae', 'mean_squared_error', etc.) 
+                        ou uma função Python customizada (y_true, y_pred) -> escalar.
+        :param metrics: Lista de métricas (strings ou funções) a serem usadas na compilação do modelo.
         """
         self.input_shape = input_shape
-        self.layers_config = layers_config or [50]  # Lista de unidades por camada, padrão [50]
+        self.layers_config = layers_config or [50]
         self.dropout = dropout or 0.2
         self.batch_size = batch_size or 32
         self.epochs = epochs or 50
         self.patience = patience or 5
+
+        self.loss_fn = loss_fn
+        self.metrics = metrics if metrics is not None else []  # se None, vira lista vazia
 
     def build_model(self):
         """
@@ -34,22 +49,24 @@ class CustomLSTMTrainer:
 
         # Adicionar as camadas LSTM configuradas
         for i, units in enumerate(self.layers_config):
-            # Se for a primeira camada, define input_shape
             if i == 0:
                 model.add(LSTM(units=units, return_sequences=True, input_shape=self.input_shape))
-            # Se for a última camada, não retorna sequência
             elif i == len(self.layers_config) - 1:
                 model.add(LSTM(units=units, return_sequences=False))
-            # Para camadas intermediárias, retorna sequência
             else:
                 model.add(LSTM(units=units, return_sequences=True))
             model.add(Dropout(self.dropout))
 
-        # Adicionar camada de saída
-        model.add(Dense(units=1))  # Previsão de um passo à frente (ajuste para múltiplos passos)
+        # Camada de saída
+        model.add(Dense(units=1))
 
         # Compilar o modelo
-        model.compile(optimizer='adam', loss='mean_squared_error')
+        # Aqui usamos self.loss_fn e self.metrics
+        model.compile(
+            optimizer="adam",
+            loss=self.loss_fn,
+            metrics=self.metrics
+        )
 
         return model
 
@@ -63,20 +80,27 @@ class CustomLSTMTrainer:
         :param y_val: Labels de validação.
         :return: Modelo treinado.
         """
-
         print(f"Dimensões de X_train: {X_train.shape}, y_train: {y_train.shape}")
         print(f"Dimensões de X_val: {X_val.shape}, y_val: {y_val.shape}")
         model = self.build_model()
 
-        # Configurar EarlyStopping para evitar overfitting
-        early_stopping = EarlyStopping(monitor='val_loss', patience=self.patience, restore_best_weights=True)
+        early_stopping = EarlyStopping(
+            monitor="val_loss",
+            patience=self.patience,
+            restore_best_weights=True
+        )
 
-        # Treinar o modelo
-        model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=self.epochs, batch_size=self.batch_size, callbacks=[early_stopping])
+        model.fit(
+            X_train, y_train,
+            validation_data=(X_val, y_val),
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            callbacks=[early_stopping]
+        )
 
         return model
 
-    def save_model(self, model, model_path='result/models/lstm_model.h5'):
+    def save_model(self, model, model_path="result/models/lstm_model.h5"):
         """
         Salva o modelo treinado.
 
@@ -86,7 +110,6 @@ class CustomLSTMTrainer:
         directory = os.path.dirname(model_path)
         if not os.path.exists(directory):
             os.makedirs(directory)
-
         model.save(model_path)
         print(f"Modelo salvo em: {model_path}")
 
@@ -99,5 +122,4 @@ class CustomLSTMTrainer:
         """
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"O modelo no caminho {model_path} não foi encontrado.")
-        
         return load_model(model_path)

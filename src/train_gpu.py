@@ -6,29 +6,16 @@ import multiprocessing
 import tensorflow as tf
 
 from models.db.model_binance import HourlyQuote
-from data.data_gpu_processing import DataProcessorGPU
-from models.lstm_gpu import CustomLSTMTrainerGPU
+from data.data_processing import DataProcessor
+from models.lstm_model import CustomLSTMTrainer
 from optimization.grid_search import GridSearch
 from keras.callbacks import EarlyStopping
 
 
-def load_data_from_db(end_date):
-    query = (HourlyQuote
-             .select()
-             .where(HourlyQuote.timestamp <= end_date)
-             .order_by(HourlyQuote.timestamp))
-    data = pd.DataFrame(list(query.dicts()))
-    if not data.empty:
-        data['timestamp'] = pd.to_datetime(data['timestamp'])
-        return data
-    else:
-        print("Nenhum dado encontrado no banco.")
-        return pd.DataFrame()
-
 
 def model_trainer(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, **config):
     """
-    Função que treina o modelo LSTM com base em 'config' e retorna a métrica (val_loss).
+    Função que treina o modelo LSTM com base em 'config' e retorna as métricas (loss, val_loss).
     """
     dropout = config.get('dropout', 0.2)
     batch_size = config.get('batch_size', 16)
@@ -37,7 +24,7 @@ def model_trainer(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, **
     layers_config = config.get('layers_config', [64, 32])
 
     input_shape = (X_train_scaled.shape[1], X_train_scaled.shape[2])
-    trainer = CustomLSTMTrainerGPU(
+    trainer = CustomLSTMTrainer(
         input_shape=input_shape,
         layers_config=layers_config,
         dropout=dropout,
@@ -62,65 +49,70 @@ def model_trainer(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, **
         verbose=1
     )
 
+    # Obtemos as últimas métricas
+    loss = history.history['loss'][-1]
     val_loss = history.history['val_loss'][-1]
-    return val_loss
+
+    return loss, val_loss
 
 
 def run_combos_on_gpu(combos, gpu_index, end_date, relevant_cols, target_col, steps_ahead, output_csv):
-    """
-    Roda uma 'mini' busca manual em 'combos' (lista de configs), usando a GPU especificada.
-    Salva os resultados em 'output_csv'.
-    """
     print(f"[Process GPU:{gpu_index}] Iniciando com {len(combos)} combinações...")
 
-    # Força uso de uma GPU específica
     with tf.device(f"/GPU:{gpu_index}"):
-        # Carrega dados
-        data_df = load_data_from_db(end_date)
+        data_df = HourlyQuote.get_to_date(end_date)
         data_df = data_df[relevant_cols]
 
-        # Instancia o DataProcessor
-        processor = DataProcessorGPU(window_size=48)  # default; combos podem alterar window_size
+        processor = DataProcessor(window_size=48)
 
-        # Variáveis para rastrear melhor score
         best_score = float("inf")
         best_config = None
-        results = []
+
+        file_exists = os.path.exists(output_csv)
 
         for i, config in enumerate(combos, start=1):
             try:
-                # Atualiza window_size (se estiver no config)
                 if 'window_size' in config:
                     processor.window_size = config['window_size']
                 
-                # Cria janelas
                 X, y = processor.create_windows(data=data_df, coluna_alvo=target_col, steps_ahead=steps_ahead)
                 X_train, X_val, X_test, y_train, y_val, y_test = processor.split_data(X, y)
 
-                # Normaliza
                 X_train_scaled, y_train_scaled = processor.normalize(X_train, y_train)
                 X_val_scaled, y_val_scaled = processor.apply_normalization(X_val, y_val)
-                # (Não precisamos necessariamente do X_test aqui se só queremos val_loss)
 
-                # Treina e obtém val_loss
-                val_loss = model_trainer(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, **config)
+                # Obtemos o loss e val_loss
+                loss, val_loss = model_trainer(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, **config)
 
                 if val_loss < best_score:
                     best_score = val_loss
                     best_config = config
 
-                results.append({**config, 'loss': val_loss})
-                print(f"[GPU:{gpu_index}] ({i}/{len(combos)}) - Config: {config} -> loss={val_loss:.5f}")
+                # Adicionar métricas ao registro
+                row_dict = {
+                    **config,
+                    'train_loss': loss,
+                    'val_loss': val_loss,
+                    'best_so_far': val_loss == best_score  # Flag para identificar melhor configuração
+                }
+                df_temp = pd.DataFrame([row_dict])
+
+                # Salvar no CSV
+                df_temp.to_csv(
+                    output_csv,
+                    mode='a',
+                    header=not file_exists,
+                    index=False
+                )
+                file_exists = True
+
+                print(f"[GPU:{gpu_index}] ({i}/{len(combos)}) - Config: {config} -> train_loss={loss:.5f}, val_loss={val_loss:.5f}")
 
             except Exception as e:
                 print(f"[GPU:{gpu_index}] Erro na config {config}: {e}")
 
-        # Salva CSV
-        import pandas as pd
-        df_res = pd.DataFrame(results)
-        df_res.to_csv(output_csv, index=False)
-        print(f"[Process GPU:{gpu_index}] Finalizado. Melhor loss={best_score:.5f} com config={best_config}")
-        print(f"[Process GPU:{gpu_index}] Resultados salvos em: {output_csv}")
+        print(f"[Process GPU:{gpu_index}] Finalizado. Melhor val_loss={best_score:.5f} com config={best_config}")
+        print(f"[Process GPU:{gpu_index}] Resultados salvos continuamente em: {output_csv}")
 
 
 if __name__ == "__main__":

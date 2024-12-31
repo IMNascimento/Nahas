@@ -37,23 +37,10 @@ def model_trainer(X_train, y_train, X_val, y_val, dropout, batch_size, epochs, p
     return val_loss
 
 
-# Função para carregar os dados
-def load_data_from_db(end_date):
-    query = (HourlyQuote
-             .select()
-             .where(HourlyQuote.timestamp <= end_date)
-             .order_by(HourlyQuote.timestamp))
-    data = pd.DataFrame(list(query.dicts()))
-    if not data.empty:
-        data['timestamp'] = pd.to_datetime(data['timestamp'])
-        return data
-    else:
-        print("Nenhum dado encontrado no banco.")
-        return pd.DataFrame()
 
 if __name__ == "__main__":
     # Carregar os dados do banco
-    data_df = load_data_from_db(END_DATE)
+    data_df = HourlyQuote.get_to_date(END_DATE)
     data_df = data_df[RELEVANT_COLUMNS]
     if data_df.empty:
         raise ValueError("Nenhum dado foi recuperado do banco de dados. Verifique a data ou os dados disponíveis.")
