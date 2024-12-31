@@ -83,7 +83,7 @@ def train_model(dropout, batch_size, epochs, patience, layers_config, window_siz
     Função principal para treinar um modelo com os hiperparâmetros fornecidos.
     """
     print(f"Treinando modelo com DROPOUT={dropout}, BATCH_SIZE={batch_size}, EPOCHS={epochs}, LAYERS={layers_config}")
-    data_df = load_data_from_db(END_DATE)
+    data_df = HourlyQuote.get_to_date(END_DATE)
     if data_df.empty:
         raise ValueError("Nenhum dado foi recuperado do banco de dados. Verifique a data ou os dados disponíveis.")
     original_timestamps = data_df['timestamp'].values

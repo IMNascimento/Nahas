@@ -23,4 +23,16 @@ class Settings:
 
     BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
     BINANCE_API_SECRET_KEY = os.getenv("BINANCE_API_SECRET_KEY")
+
+
+    WINDOW_SIZE = os.getenv("WINDOW_SIZE")
+    BATCH_SIZE = os.getenv("BATCH_SIZE")
+    DROPOUT = os.getenv("DROPOUT")
+    EPOCHS = os.getenv("EPOCHS")
+    PATIENCE = os.getenv("PATIENCE")
+    LAYERS_CONFIG = os.getenv("LAYERS_CONFIG")
+    STEPS_AHEAD = os.getenv("STEPS_AHEAD")
+    RELEVANT_COLUMNS = os.getenv("RELEVANT_COLUMNS")
+    TARGET_COLUMN = os.getenv("TARGET_COLUMN")
+
     
