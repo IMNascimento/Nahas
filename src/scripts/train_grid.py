@@ -6,11 +6,10 @@ import multiprocessing
 import tensorflow as tf
 
 from models.db.model_binance import HourlyQuote
-from data.data_processing import DataProcessor
-from models.lstm_model import CustomLSTMTrainer
+from data.data_gpu_processing import DataProcessorGPU
+from models.lstm_gpu import CustomLSTMTrainerGPU
 from optimization.grid_search import GridSearch
 from keras.callbacks import EarlyStopping
-import ast  # Para converter strings em listas
 
 
 
@@ -25,7 +24,7 @@ def model_trainer(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, **
     layers_config = config.get('layers_config', [64, 32])
 
     input_shape = (X_train_scaled.shape[1], X_train_scaled.shape[2])
-    trainer = CustomLSTMTrainer(
+    trainer = CustomLSTMTrainerGPU(
         input_shape=input_shape,
         layers_config=layers_config,
         dropout=dropout,
@@ -57,47 +56,6 @@ def model_trainer(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, **
     return loss, val_loss
 
 
-def get_unprocessed_combinations(all_combos, csv_files):
-    """
-    Filtra as combinações que ainda não foram processadas com base nos CSVs de resultados.
-
-    :param all_combos: Lista de todas as combinações de hiperparâmetros.
-    :param csv_files: Lista de caminhos para os arquivos CSV contendo os resultados processados.
-    :return: Lista de combinações não processadas.
-    """
-    processed_configs = []
-
-    # Ler os CSVs e adicionar combinações processadas à lista
-    for csv_file in csv_files:
-        if os.path.exists(csv_file):
-            df = pd.read_csv(csv_file)
-
-            # Renomear colunas do CSV para corresponderem ao `param_grid`
-            column_mapping = {
-                "dropout": "dropout",
-                "batchsize": "batch_size",
-                "epochs": "epochs",
-                "patience": "patience",
-                "layers": "layers_config",
-                "window_Size": "window_size"
-            }
-            df.rename(columns=column_mapping, inplace=True)
-
-            # Converter a coluna 'layers_config' de string para lista
-            if 'layers_config' in df.columns:
-                df['layers_config'] = df['layers_config'].apply(ast.literal_eval)
-
-            # Garantir que as colunas do hiperparâmetro existem
-            hyperparam_cols = [col for col in df.columns if col in param_grid.keys()]
-            processed_configs.extend(df[hyperparam_cols].to_dict('records'))
-
-    # Comparar com as combinações totais
-    unprocessed_combos = [
-        combo for combo in all_combos if combo not in processed_configs
-    ]
-
-    return unprocessed_combos
-
 def run_combos_on_gpu(combos, gpu_index, end_date, relevant_cols, target_col, steps_ahead, output_csv):
     print(f"[Process GPU:{gpu_index}] Iniciando com {len(combos)} combinações...")
 
@@ -105,7 +63,7 @@ def run_combos_on_gpu(combos, gpu_index, end_date, relevant_cols, target_col, st
         data_df = HourlyQuote.get_to_date(end_date)
         data_df = data_df[relevant_cols]
 
-        processor = DataProcessor(window_size=48)
+        processor = DataProcessorGPU(window_size=48)
 
         best_score = float("inf")
         best_config = None
@@ -186,23 +144,18 @@ if __name__ == "__main__":
     all_combos = gs._generate_configurations()  # lista de dicionários
     print(f"Total de combinações geradas: {len(all_combos)}")
 
-    #### 3) Identificar combinações não processadas
-    csv_files = ["resultados_gpu0.csv", "resultados_gpu1.csv"]
-    unprocessed_combos = get_unprocessed_combinations(all_combos, csv_files)
-    print(f"Total de combinações não processadas: {len(unprocessed_combos)}")
+    #### 3) Dividimos a lista de combinações em duas metades
+    half = len(all_combos)//2
+    combos_half_1 = all_combos[:half]
+    combos_half_2 = all_combos[half:]
 
-    #### 4) Dividir combinações não processadas entre as GPUs
-    half = len(unprocessed_combos) // 2
-    combos_half_1 = unprocessed_combos[:half]
-    combos_half_2 = unprocessed_combos[half:]
-
-    #### 5) Disparar os processos novamente
+    #### 4) Disparamos 2 processos, cada um rodando combos diferentes
     end_date = "2024-09-14 23:59:59"
     relevant_cols = ["open", "high", "low", "close", "volume"]
     target_col = "close"
     steps_ahead = 1
 
-    # Nome dos CSVs de saída (usar os mesmos para continuar os resultados)
+    # Nome dos CSVs de saída
     output_csv_1 = "resultados_gpu0.csv"
     output_csv_2 = "resultados_gpu1.csv"
 
