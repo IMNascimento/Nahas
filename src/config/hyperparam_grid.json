@@ -1,0 +1,31 @@
+{
+    "WINDOW_SIZE": [72, 96, 120],
+    "STEPS_AHEAD": [1],
+    "LAYERS_CONFIG": [
+        [128, 64], [64, 64], [256, 256], [256, 128],
+        [512, 512, 512], [128, 128], [128, 128, 128]
+    ],
+    "ACTIVATION_FUNCTION": [
+        ["tanh", "relu"],
+        ["tanh", "tanh"]
+    ],
+    "BIDIRECTIONAL": [false],
+    "DROPOUT": [0.2, 0.3, 0.4],
+    "RECURRENT_DROPOUT": [],
+    "L1_REGULARIZATION": [],
+    "L2_REGULARIZATION": [],
+    "LEARNING_RATE": [],
+    "OPTIMIZER": ["Adam"],
+    "OUTPUT_UNITS": [1],
+    "BATCH_SIZE": [16, 32, 64, 128],
+    "EPOCHS": [50],
+    "PATIENCE": [5],
+    "LOSS_FUNCTION": ["mae"],
+    "METRICS": [],
+    "VALIDATION_SPLIT": [0.2],
+    "END_DATE": "2024-09-14 23:59:59", 
+    "TARGET_COLUMN": "close",
+    "RELEVANT_COLUMNS": [
+       "open", "high", "low", "close", "volume"
+    ]
+}
