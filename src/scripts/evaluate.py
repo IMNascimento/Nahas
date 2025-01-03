@@ -1,22 +1,20 @@
 from models.db.model_binance import HourlyQuote
 from keras.models import load_model
+from models.lstm_model import CustomLSTMTrainer
 from data.data_processing import DataProcessor
+from utils.technical_indicators import TechnicalIndicators
+from config.settings import Settings
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 import os
 
-# Configurações
-window_size = 48 # Tamanho da janela
-start_date = "2024-11-14 00:00:00"  # Data inicial para buscar os dados
-model_path = "result/models/model_dropout_0.3_batch_64_window_48_layers_[256, 128].h5"
 
-
-def save_results_to_csv(results_df, model_path):
+def save_results_to_csv(results_df):
     """
     Salva os resultados em um arquivo CSV com o nome baseado no modelo.
     """
-    model_name = os.path.basename(model_path).replace(".h5", "")  # Extrai o nome do modelo sem extensão
+    model_name = os.path.basename(Settings.LOAD_MODEL).replace(".h5", "")  # Extrai o nome do modelo sem extensão
     output_path = f"result/csv/testes/{model_name}_results.csv"  # Define o caminho de saída
     # Cria o diretório, se necessário
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -24,21 +22,23 @@ def save_results_to_csv(results_df, model_path):
     print(f"Resultados salvos em: {output_path}")
 
 # Função para testar o modelo
-def test_model(start_date):
+def test_model():
     """
     Testa o modelo treinado com os dados do banco e armazena as previsões.
     """
     # Carregar o modelo e scaler
-    model = load_model(model_path)
-    processor = DataProcessor(window_size=window_size)
+    model = CustomLSTMTrainer()
+    model.loading_model(Settings.LOAD_MODEL)
+    processor = DataProcessor(window_size=Settings.WINDOW_SIZE)
     processor.load_scaler()
 
     # Carregar os dados do banco
-    data = HourlyQuote.get_from_date(start_date)
-    if data is None or len(data) < window_size:
+    data = HourlyQuote.get_from_date(Settings.START_DATE)
+    if data is None or len(data) < Settings.WINDOW_SIZE:
         print("Dados insuficientes para realizar a previsão.")
         return
-
+    data = TechnicalIndicators.process_indicators(data, Settings.INDICATORS_APPLY)
+    
     # Converter timestamps para numérico (se necessário)
     if 'timestamp' in data.columns:
         data['timestamp'] = data['timestamp'].apply(lambda x: x.timestamp())
@@ -47,13 +47,13 @@ def test_model(start_date):
     results = []
 
     # Iterar pelas janelas de dados para fazer as previsões
-    for i in range(len(data) - window_size):
+    for i in range(len(data) - Settings.WINDOW_SIZE):
         # Criar uma janela de 48 horas
-        window = data.iloc[i:i + window_size]
-        real_value = data.iloc[i + window_size]['close']  # Valor real para a próxima hora
+        window = data.iloc[i:i + Settings.WINDOW_SIZE]
+        real_value = data.iloc[i + Settings.WINDOW_SIZE]['close']  # Valor real para a próxima hora
 
         # Normalizar e preparar os dados para o modelo
-        features = window[["open", "high", "low", "close", "volume"]].values  # Apenas features relevantes
+        features = window[Settings.RELEVANT_COLUMNS].values  # Apenas features relevantes
         print(f"TESTE: Dimensões da janela antes da previsão: {features.shape}")
         features_scaled = processor.scaler_X.transform(features)
         print(f"TESTE: Dimensões após normalização: {features_scaled.shape}")
@@ -70,15 +70,15 @@ def test_model(start_date):
         print(f"TESTE: Valor previsto desnormalizado: {predicted_value}")
 
         results.append({
-            'real_value': real_value,
-            'predicted_value': predicted_value
+            'Valor_Real': real_value,
+            'Valor_Predito': predicted_value
         })
 
     # Retornar os resultados como um DataFrame
     return pd.DataFrame(results)
 
 # Executar o teste
-results_df = test_model(start_date)
+results_df = test_model()
 
 # Exibir os resultados
 if results_df is not None:
@@ -86,4 +86,5 @@ if results_df is not None:
     print(results_df.tail())  # Exibir os últimos resultados
 
     # Salvar os resultados com base no nome do modelo
-    save_results_to_csv(results_df, model_path)
+    save_results_to_csv(results_df)
+

@@ -1,32 +1,54 @@
 import itertools
 import pandas as pd
+from utils.validation import DataValidator 
+
 
 class GridSearch:
-    def __init__(self, model_trainer, param_grid, scoring, verbose=1):
+    """
+    Classe para realizar Grid Search em modelos de machine learning ou deep learning.
+    """
+
+    def __init__(self, model_trainer: callable, param_grid: dict, scoring: str, verbose: int = 1):
         """
-        Classe para realizar Grid Search em modelos de machine learning ou deep learning.
+        Inicializa a instância de GridSearch.
 
         :param model_trainer: Função ou callable que treina e avalia o modelo. Deve retornar a métrica definida em `scoring`.
         :param param_grid: Dicionário com os hiperparâmetros a serem otimizados e seus valores possíveis.
         :param scoring: Nome da métrica a ser usada como critério de avaliação (ex: 'accuracy', 'loss').
         :param verbose: Nível de logging (0 - silencioso, 1 - informações básicas, 2 - detalhado).
         """
-        self.model_trainer = model_trainer
-        self.param_grid = param_grid
-        self.scoring = scoring
-        self.verbose = verbose
+        DataValidator.validate_dict(param_grid, key_type=str, value_type=list)
+        DataValidator.validate_string(scoring)
+        DataValidator.validate_integer(verbose, min_value=0, max_value=2)
 
-    def _generate_configurations(self):
+        self._model_trainer = model_trainer
+        self._param_grid = param_grid
+        self._scoring = scoring
+        self._verbose = verbose
+
+    def _generate_configurations(self) -> list[dict]:
         """
-        Gera todas as combinações possíveis de hiperparâmetros a partir de `param_grid`.
+        Gera todas as combinações possíveis de hiperparâmetros a partir de `_param_grid`.
 
         :return: Lista de dicionários com combinações de parâmetros.
         """
-        keys = self.param_grid.keys()
-        values = self.param_grid.values()
-        return [dict(zip(keys, combination)) for combination in itertools.product(*values)]
+        # Filtrar apenas parâmetros que possuem valores
+        filtered_param_grid = {k: v for k, v in self._param_grid.items() if v}
 
-    def search(self, data_processor, data_df, coluna_alvo, steps_ahead):
+        if not filtered_param_grid:
+            return []  # Retorna vazio se não houver parâmetros válidos
+
+        keys = filtered_param_grid.keys()
+        values = filtered_param_grid.values()
+        return [dict(zip(keys, combination)) for combination in itertools.product(*values)]
+   
+    def search(
+        self,
+        data_processor,
+        data_df: pd.DataFrame,
+        coluna_alvo: str,
+        steps_ahead: int
+    ) -> dict:
         """
         Realiza o Grid Search para encontrar os melhores hiperparâmetros.
 
@@ -36,16 +58,19 @@ class GridSearch:
         :param steps_ahead: Número de passos à frente para previsão.
         :return: Dicionário com os melhores hiperparâmetros e resultados detalhados.
         """
+        DataValidator.validate_string(coluna_alvo)
+        DataValidator.validate_integer(steps_ahead, min_value=1)
+
         configurations = self._generate_configurations()
-        best_score = -float("inf") if self.scoring != 'loss' else float("inf")
+        best_score = -float("inf") if self._scoring != 'loss' else float("inf")
         best_params = None
         results = []
 
-        if self.verbose > 0:
+        if self._verbose > 0:
             print(f"Iniciando Grid Search com {len(configurations)} combinações...")
 
         for idx, config in enumerate(configurations):
-            if self.verbose > 1:
+            if self._verbose > 1:
                 print(f"\n[{idx + 1}/{len(configurations)}] Testando configuração: {config}")
 
             try:
@@ -62,27 +87,27 @@ class GridSearch:
                 X_validation_scaled, y_validation_scaled = data_processor.apply_normalization(X_validation, y_validation)
 
                 # Treina e avalia o modelo
-                score = self.model_trainer(X_train_scaled, y_train_scaled, X_validation_scaled, y_validation_scaled, **config)
+                score = self._model_trainer(X_train_scaled, y_train_scaled, X_validation_scaled, y_validation_scaled, **config)
 
-                if self.verbose > 1:
-                    print(f"Configuração: {config} | {self.scoring}: {score}")
+                if self._verbose > 1:
+                    print(f"Configuração: {config} | {self._scoring}: {score}")
 
                 # Atualiza os melhores parâmetros se necessário
-                if (self.scoring == 'loss' and score < best_score) or (self.scoring != 'loss' and score > best_score):
+                if (self._scoring == 'loss' and score < best_score) or (self._scoring != 'loss' and score > best_score):
                     best_score = score
                     best_params = config
 
                 # Salva o resultado
-                results.append({**config, self.scoring: score})
+                results.append({**config, self._scoring: score})
 
             except Exception as e:
-                if self.verbose > 0:
+                if self._verbose > 0:
                     print(f"Erro ao testar configuração {config}: {e}")
 
-        if self.verbose > 0:
+        if self._verbose > 0:
             print("\nGrid Search concluído.")
             print(f"Melhores parâmetros: {best_params}")
-            print(f"Melhor {self.scoring}: {best_score}")
+            print(f"Melhor {self._scoring}: {best_score}")
 
         return {
             'best_params': best_params,

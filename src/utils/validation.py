@@ -105,3 +105,49 @@ class DataValidator:
                     raise ValidationError(f"Todos os valores do dicionário devem ser do tipo {value_type.__name__}, mas o valor '{val}' é do tipo {type(val).__name__}.")
 
         return True
+    
+
+    @staticmethod
+    def validate_boolean(value):
+        """
+        Valida se o valor é um booleano válido.
+
+        :param value: O valor a ser validado.
+        :raises ValidationError: Se o valor não for um booleano.
+        :return: True se o valor for válido.
+        """
+        if not isinstance(value, bool):
+            raise ValidationError(f"Esperado um valor booleano, mas recebido {type(value).__name__}")
+        return True
+    
+    @staticmethod
+    def validate_tuple(value, item_types=None, min_length=None, max_length=None):
+        """
+        Valida se o valor é uma tupla válida e opcionalmente valida os tipos dos itens.
+
+        :param value: O valor a ser validado.
+        :param item_types: Tipo(s) esperado(s) para os itens da tupla (ex: int, float, [int, float]).
+        :param min_length: Comprimento mínimo da tupla.
+        :param max_length: Comprimento máximo da tupla.
+        :raises ValidationError: Se o valor não for uma tupla ou não atender aos critérios.
+        :return: True se o valor for válido.
+        """
+        if not isinstance(value, tuple):
+            raise ValidationError(f"Esperado uma tupla, mas recebido {type(value).__name__}")
+
+        if min_length is not None and len(value) < min_length:
+            raise ValidationError(f"A tupla deve ter pelo menos {min_length} itens.")
+
+        if max_length is not None and len(value) > max_length:
+            raise ValidationError(f"A tupla deve ter no máximo {max_length} itens.")
+
+        if item_types:
+            if not isinstance(item_types, (list, tuple)):
+                item_types = [item_types]  # Converte para lista para suportar múltiplos tipos.
+            
+            for item in value:
+                if not any(isinstance(item, item_type) for item_type in item_types):
+                    allowed_types = ", ".join(t.__name__ for t in item_types)
+                    raise ValidationError(f"Todos os itens da tupla devem ser de um dos tipos: {allowed_types}.")
+        
+        return True
