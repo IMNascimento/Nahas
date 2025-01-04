@@ -17,6 +17,7 @@ from utils.technical_indicators import TechnicalIndicators
 from config.settings import *
 from keras.callbacks import EarlyStopping
 import random
+import time
 import hashlib
 
 
@@ -90,8 +91,9 @@ def run_combos_on_gpu(combos, gpu_index, end_date, relevant_cols, target_col, st
 
                 X_train_scaled, y_train_scaled = processor.normalize(X_train, y_train)
                 X_val_scaled, y_val_scaled = processor.apply_normalization(X_val, y_val)
-
-                hash_input = json.dumps(config, sort_keys=True).encode()
+                
+                hash_input = json.dumps(config, sort_keys=True) + str(time.time())
+                hash_input = hash_input.encode()
                 model_hash = hashlib.md5(hash_input).hexdigest()[:8]
                 model_name = f"model_gpu{gpu_index}_{model_hash}.h5"
                 model_path = os.path.join("result/grid/models", model_name)

@@ -1,5 +1,5 @@
 {
-    "LOAD_MODEL": "result/train/e4a39a2d/models/model_e4a39a2d.h5",
+    "LOAD_MODEL": "result/train/59889c8d/models/model_59889c8d.h5",
     "END_DATE": "2024-09-14 23:59:59", 
     "START_DATE": "2024-11-14 00:00:00",
     "WINDOW_SIZE": 96,
@@ -17,17 +17,21 @@
     "BATCH_SIZE": 16,
     "EPOCHS": 50,
     "PATIENCE": 5,
-    "LOSS_FUNCTION": ["mean_squared_error"],
+    "LOSS_FUNCTION": ["mean_absolute_error"],
     "METRICS": null,
     "VALIDATION_SPLIT": 0.15,
     "TRAIN_SIZE": 0.7,
     "TARGET_COLUMN": "close",
     "RELEVANT_COLUMNS": [
+        "RSI",
+        "MACD",
+        "MACD_Signal",
+        "ATR",
         "close",
-        "volume",
-        "open",
-        "high",
-        "low"
+        "volume", 
+        "Fibo_23.6%",
+        "Fibo_50.0%",
+        "Proj_Fibo_100.0%"
     ],
     "INDICATORS_APPLY": {
         "sma": [

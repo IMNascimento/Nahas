@@ -75,12 +75,12 @@ class TechnicalIndicators:
         # Substituir NaN por média (colunas originais) ou mínimo (colunas de indicador)
         for col in data.columns:
             if data[col].isna().any():
-                if col in data.columns[:len(data.columns) - len(indicators_to_apply)]:
-                    # Colunas originais
-                    data[col].fillna(data[col].mean())
+                if col in ['open', 'high', 'low', 'close', 'volume']:
+                    # Para colunas originais
+                    data[col].fillna(data[col].mean(), inplace=True)
                 else:
-                    # Colunas de indicadores
-                    data[col].fillna(data[col].min())
+                    # Para colunas de indicadores
+                    data[col].fillna(data[col].min(), inplace=True)
 
         return data
 

@@ -1,4 +1,4 @@
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 import numpy as np
 import joblib
 import os
@@ -10,7 +10,7 @@ class DataProcessor:
     Classe responsável por processar dados para modelos LSTM.
     """
 
-    def __init__(self, window_size: int, feature_range: tuple = (0, 1)):
+    def __init__(self, window_size: int):
         """
         Inicializa o processador de dados.
 
@@ -18,11 +18,31 @@ class DataProcessor:
         :param feature_range: Intervalo de normalização do MinMaxScaler.
         """
         DataValidator.validate_integer(window_size, min_value=1)
-        DataValidator.validate_tuple(feature_range, item_types=[int, float], min_length=2, max_length=2)
 
         self._window_size = window_size
-        self._scaler_X = MinMaxScaler(feature_range=feature_range)
-        self._scaler_y = MinMaxScaler(feature_range=feature_range)
+        self._scaler_X = StandardScaler()
+        self._scaler_y = StandardScaler()
+
+    def normalize_sliding_window(self, data: np.ndarray) -> np.ndarray:
+        """
+        Aplica a normalização em uma série temporal usando uma janela deslizante.
+        
+        :param data: Dados de entrada (2D ou 3D) para a normalização (timesteps x features).
+        :return: Dados normalizados (mesmas dimensões que os dados de entrada).
+        """
+        if not isinstance(data, np.ndarray):
+            raise TypeError("Os dados devem ser um ndarray.")
+        if len(data.shape) != 2:
+            raise ValueError("Os dados devem ser 2D (timesteps x features).")
+
+        normalized_data = np.zeros_like(data)
+        for i in range(len(data) - self._window_size + 1):
+            window = data[i:i + self._window_size]
+            scaler = StandardScaler()
+            normalized_data[i:i + self._window_size] = scaler.fit_transform(window)
+
+        # Retorna os dados normalizados com a mesma forma original
+        return normalized_data
 
     def create_windows(self, data: pd.DataFrame, coluna_alvo: str = None, steps_ahead: int = 1) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -96,13 +116,19 @@ class DataProcessor:
         :param y: Conjunto de saídas.
         :return: Dados normalizados.
         """
+       
         DataValidator.validate_list(list(X.shape), item_type=int, min_length=3)
         DataValidator.validate_list(list(y.shape), item_type=int, min_length=1)
 
         X_train_scaled = self._scaler_X.fit_transform(X.reshape(-1, X.shape[2]))
         y_train_scaled = self._scaler_y.fit_transform(y.reshape(-1, 1) if len(y.shape) == 1 else y.reshape(-1, y.shape[-1]))
-
         X_train_scaled = X_train_scaled.reshape(X.shape)
+
+         # Verificar valores pós-normalização
+        if np.isnan(X_train_scaled).any() or np.isinf(X_train_scaled).any():
+            raise ValueError("Dados normalizados contêm valores inválidos (NaN ou Inf). Verifique o pré-processamento.")
+        
+
         return X_train_scaled, y_train_scaled
 
     def apply_normalization(self, X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
