@@ -13,7 +13,7 @@ class CustomLSTMTrainer:
 
     def __init__(
         self, 
-        input_shape: tuple,
+        input_shape: tuple = None,
         layers_config: list = None,
         dropout: float = None,
         recurrent_dropout: float = None,

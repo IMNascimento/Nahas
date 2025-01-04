@@ -1,5 +1,5 @@
 {
-    "LOAD_MODEL": "result/models/model_dropout_0.3_batch_64_window_48_layers_[256, 128].h5",
+    "LOAD_MODEL": "result/train/e4a39a2d/models/model_e4a39a2d.h5",
     "END_DATE": "2024-09-14 23:59:59", 
     "START_DATE": "2024-11-14 00:00:00",
     "WINDOW_SIZE": 96,
@@ -17,7 +17,7 @@
     "BATCH_SIZE": 16,
     "EPOCHS": 50,
     "PATIENCE": 5,
-    "LOSS_FUNCTION": ["mean_absolute_error"],
+    "LOSS_FUNCTION": ["mean_squared_error"],
     "METRICS": null,
     "VALIDATION_SPLIT": 0.15,
     "TRAIN_SIZE": 0.7,
