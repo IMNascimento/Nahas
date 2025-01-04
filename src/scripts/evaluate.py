@@ -1,13 +1,13 @@
+import os
+import sys
+src_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+sys.path.append(src_root) if src_root not in sys.path else None
 from models.db.model_binance import HourlyQuote
-from keras.models import load_model
 from models.lstm_model import CustomLSTMTrainer
 from data.data_processing import DataProcessor
 from utils.technical_indicators import TechnicalIndicators
 from config.settings import Settings
-import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
-import os
 
 
 def save_results_to_csv(results_df):
@@ -15,7 +15,7 @@ def save_results_to_csv(results_df):
     Salva os resultados em um arquivo CSV com o nome baseado no modelo.
     """
     model_name = os.path.basename(Settings.LOAD_MODEL).replace(".h5", "")  # Extrai o nome do modelo sem extensão
-    output_path = f"result/csv/testes/{model_name}_results.csv"  # Define o caminho de saída
+    output_path = f"result/testes/{model_name}_results.csv"  # Define o caminho de saída
     # Cria o diretório, se necessário
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     results_df.to_csv(output_path, index=False)  # Salva o DataFrame em CSV
@@ -27,8 +27,8 @@ def test_model():
     Testa o modelo treinado com os dados do banco e armazena as previsões.
     """
     # Carregar o modelo e scaler
-    model = CustomLSTMTrainer()
-    model.loading_model(Settings.LOAD_MODEL)
+    trainer = CustomLSTMTrainer()
+    model = trainer.loading_model(Settings.LOAD_MODEL)
     processor = DataProcessor(window_size=Settings.WINDOW_SIZE)
     processor.load_scaler()
 
@@ -55,7 +55,7 @@ def test_model():
         # Normalizar e preparar os dados para o modelo
         features = window[Settings.RELEVANT_COLUMNS].values  # Apenas features relevantes
         print(f"TESTE: Dimensões da janela antes da previsão: {features.shape}")
-        features_scaled = processor.scaler_X.transform(features)
+        features_scaled = processor._scaler_X.transform(features)
         print(f"TESTE: Dimensões após normalização: {features_scaled.shape}")
         X_input = features_scaled.reshape(1, features_scaled.shape[0], features_scaled.shape[1])
         print(f"TESTE: Dimensões de entrada para o modelo: {X_input.shape}")
@@ -67,11 +67,11 @@ def test_model():
         print(f"Formato de predicted_scaled: {predicted_scaled.shape}")
 
         predicted_value = processor.inverse_transform(predicted_scaled)
-        print(f"TESTE: Valor previsto desnormalizado: {predicted_value}")
+        print(f"TESTE: Valor previsto desnormalizado: {predicted_value[0][0]}")
 
         results.append({
             'Valor_Real': real_value,
-            'Valor_Predito': predicted_value
+            'Valor_Predito': predicted_value[0][0]
         })
 
     # Retornar os resultados como um DataFrame

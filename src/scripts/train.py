@@ -197,9 +197,12 @@ def train_model(
     # Salva o modelo
     trainer.save_model(lstm_model, model_path=model_path)
 
-    # Avaliar o modelo
-    train_loss = trainer.evaluate(X_train_scaled, y_train_scaled, verbose=0)
-    val_loss = trainer.evaluate(X_validation_scaled, y_validation_scaled, verbose=0)
+    # Acessa o histórico de treinamento
+    history = lstm_model.history
+
+    # Obter train_loss e val_loss da última época
+    train_loss = history.history['loss'][-1]
+    val_loss = history.history['val_loss'][-1]
 
     # Salvar informações do treinamento no csv
     save_training_info(global_csv_path,
@@ -296,7 +299,7 @@ if __name__ == "__main__":
     # Caminhos
     model_path = os.path.join(train_folder, "models", f"model_{config_hash}.h5")
     csv_output_path = os.path.join(train_folder, "csv", f"results_{config_hash}.csv")
-    plot_output_path = os.path.join(train_folder, "graficos")
+    plot_output_path = os.path.join(train_folder, "graficos/")
 
     try:
         train_model(

@@ -1,6 +1,5 @@
 import os
 from dotenv import load_dotenv
-import sys
 import json
 import random
 import numpy as np
@@ -9,11 +8,6 @@ import tensorflow as tf
 # Diretório raiz do projeto (src)
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))  # Caminho até `src/config/settings.py`
 SRC_ROOT = os.path.abspath(os.path.join(PROJECT_ROOT, '..'))
-
-# Adiciona o diretório src ao sys.path
-if SRC_ROOT not in sys.path:
-    sys.path.append(SRC_ROOT)
-
 # Caminho para o arquivo JSON de hiperparâmetros
 HYPERPARAMETERS_FILE = os.path.join(SRC_ROOT, "config", "hyperparameters.json")
 

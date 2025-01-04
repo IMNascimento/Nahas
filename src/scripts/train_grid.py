@@ -45,25 +45,14 @@ def model_trainer(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled,mod
         activation_functions= config.get('ACTIVATION_FUNCTION', 'tanh'),
         output_units= config.get('OUTPUT_UNITS', 1),
     )
-    model = trainer.build_model()
-       
-    early_stopping = EarlyStopping(
-        monitor='val_loss',
-        patience=config.get('PATIENCE', 5),
-        restore_best_weights=True
-    )
 
-    history = model.fit(
+    lstm_model = trainer.train(
         X_train_scaled, y_train_scaled,
-        validation_data=(X_val_scaled, y_val_scaled),
-        epochs=config.get('EPOCHS', 50),
-        batch_size=config.get('BATCH_SIZE', 32),
-        callbacks=[early_stopping],
-        verbose=1
+        X_val_scaled, y_val_scaled
     )
-
+    history = lstm_model.history
     # Salvar o modelo
-    trainer.save_model(model, model_path)
+    trainer.save_model(lstm_model, model_path)
 
     # Obtemos as últimas métricas
     loss = history.history['loss'][-1]
