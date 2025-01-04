@@ -13,6 +13,7 @@ from utils.plotter import Plotter
 from utils.csv_exporter import CSVExporter
 from utils.technical_indicators import TechnicalIndicators
 import hashlib
+import time
 import pandas as pd
 
 set_seed(Settings.SEED)
@@ -98,7 +99,15 @@ def save_training_info(
         "train_loss": train_loss,
         "val_loss": val_loss,
         "model_path": model_path,
-        "SEED": Settings.SEED
+        "SEED": Settings.SEED,
+        "COLUNAS": Settings.RELEVANT_COLUMNS,
+        "ALVO": Settings.TARGET_COLUMN,
+        "VALIDATION_SPLIT": Settings.VALIDATION_SPLIT,
+        "TRAIN_SIZE": Settings.TRAIN_SIZE,
+        "STEPS_AHEAD": Settings.STEPS_AHEAD,
+        "GPU": Settings.USE_GPU,
+        "END_DATE": Settings.END_DATE, 
+        "START_DATE": Settings.START_DATE
     }
     results_df = pd.DataFrame([results])
     results_df.to_csv(global_csv_path, mode="a", header=not file_exists, index=False)
@@ -293,7 +302,9 @@ if __name__ == "__main__":
     layers_config = eval(args.layers_config) if args.layers_config else Settings.LAYERS_CONFIG
 
 
-    config_hash = hashlib.md5(str(args).encode()).hexdigest()[:8]
+    # Adiciona o timestamp atual aos argumentos
+    unique_input = str(args) + str(time.time())
+    config_hash = hashlib.md5(unique_input.encode()).hexdigest()[:8]
     train_folder = create_train_folder(config_hash)
 
     # Caminhos

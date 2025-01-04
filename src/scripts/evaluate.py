@@ -30,7 +30,6 @@ def test_model():
     trainer = CustomLSTMTrainer()
     model = trainer.loading_model(Settings.LOAD_MODEL)
     processor = DataProcessor(window_size=Settings.WINDOW_SIZE)
-    processor.load_scaler()
 
     # Carregar os dados do banco
     data = HourlyQuote.get_from_date(Settings.START_DATE)
@@ -43,32 +42,29 @@ def test_model():
     if 'timestamp' in data.columns:
         data['timestamp'] = data['timestamp'].apply(lambda x: x.timestamp())
 
+
+    # Normalizar os dados com janela deslizante
+    features = data[Settings.RELEVANT_COLUMNS].values
+    features_normalized = processor.normalize_sliding_window(features)
     # Preparar o array para armazenar os resultados
     results = []
+    for i in range(len(features_normalized) - Settings.WINDOW_SIZE):
+        # Criar uma janela deslizante
+        window_normalized = features_normalized[i:i + Settings.WINDOW_SIZE]
+        real_value = data.iloc[i + Settings.WINDOW_SIZE]['close']
 
-    # Iterar pelas janelas de dados para fazer as previsões
-    for i in range(len(data) - Settings.WINDOW_SIZE):
-        # Criar uma janela de 48 horas
-        window = data.iloc[i:i + Settings.WINDOW_SIZE]
-        real_value = data.iloc[i + Settings.WINDOW_SIZE]['close']  # Valor real para a próxima hora
+        # Preparar os dados para entrada no modelo
+        X_input = window_normalized.reshape(1, window_normalized.shape[0], window_normalized.shape[1])
 
-        # Normalizar e preparar os dados para o modelo
-        features = window[Settings.RELEVANT_COLUMNS].values  # Apenas features relevantes
-        print(f"TESTE: Dimensões da janela antes da previsão: {features.shape}")
-        features_scaled = processor._scaler_X.transform(features)
-        print(f"TESTE: Dimensões após normalização: {features_scaled.shape}")
-        X_input = features_scaled.reshape(1, features_scaled.shape[0], features_scaled.shape[1])
-        print(f"TESTE: Dimensões de entrada para o modelo: {X_input.shape}")
         # Fazer a previsão
         predicted_scaled = model.predict(X_input)
-        
-        print(f"TESTE: Dimensões do resultado da previsão escalada: {predicted_scaled.shape}")
-        # Verificar o formato de saída e desnormalizar corretamente
-        print(f"Formato de predicted_scaled: {predicted_scaled.shape}")
 
-        predicted_value = processor.inverse_transform(predicted_scaled)
-        print(f"TESTE: Valor previsto desnormalizado: {predicted_value[0][0]}")
+        # Reverter a normalização usando estatísticas da janela
+        mean = features[i:i + Settings.WINDOW_SIZE].mean(axis=0)
+        std = features[i:i + Settings.WINDOW_SIZE].std(axis=0) + 1e-8
+        predicted_value = (predicted_scaled * std[-1]) + mean[-1]
 
+        # Adicionar aos resultados
         results.append({
             'Valor_Real': real_value,
             'Valor_Predito': predicted_value[0][0]
@@ -76,7 +72,7 @@ def test_model():
 
     # Retornar os resultados como um DataFrame
     return pd.DataFrame(results)
-
+    
 # Executar o teste
 results_df = test_model()
 
