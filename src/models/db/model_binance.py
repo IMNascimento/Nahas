@@ -57,6 +57,29 @@ class HourlyQuote(BaseModel):
             print("Nenhum dado encontrado no banco.")
             return None
 
+    def get_between_dates(start_date, end_date):
+        """
+        Carrega os dados de cotações entre uma data inicial e final.
+
+        :param start_date: Data inicial no formato 'YYYY-MM-DD HH:MM:SS'.
+        :param end_date: Data final no formato 'YYYY-MM-DD HH:MM:SS'.
+        :return: DataFrame com os dados filtrados.
+        """
+        query = (HourlyQuote
+                .select()
+                .where((HourlyQuote.timestamp >= start_date) & (HourlyQuote.timestamp <= end_date))
+                .order_by(HourlyQuote.timestamp))
+
+        data = pd.DataFrame(list(query.dicts()))
+        if not data.empty:
+            data['timestamp'] = pd.to_datetime(data['timestamp'])
+            return data[["timestamp","open", "high", "low", "close", "volume"]]
+        else:
+            print("Nenhum dado encontrado no banco para o período especificado.")
+            return None
+
+
+
 # Defina o modelo para cotações diárias
 class DailyQuote(BaseModel):
     timestamp = DateTimeField(unique=True)

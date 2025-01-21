@@ -151,7 +151,7 @@ def train_model(
 ):
     print(f"Treinando modelo com DROPOUT={dropout}, BATCH_SIZE={batch_size}, EPOCHS={epochs}, LAYERS={layers_config}")
     global_csv_path = os.path.join("result/train", "training_results.csv")
-    data_df = HourlyQuote.get_to_date(Settings.END_DATE)
+    data_df = HourlyQuote.get_between_dates(Settings.START_DATE,Settings.END_DATE)
     if data_df.empty:
         raise ValueError("Nenhum dado foi recuperado do banco de dados. Verifique a data ou os dados disponíveis.")
     

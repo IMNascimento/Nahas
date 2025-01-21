@@ -94,3 +94,4 @@ class Settings:
     VALIDATION_SPLIT = hyperparameters.get("VALIDATION_SPLIT", 0.15)
     TRAIN_SIZE= hyperparameters.get("TRAIN_SIZE", 0.70)
     LOAD_MODEL= hyperparameters.get("LOAD_MODEL")
+    LOAD_MODEL_FINETUNING= hyperparameters.get("LOAD_MODEL_FINETUNING")
