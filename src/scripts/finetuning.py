@@ -14,10 +14,9 @@ from models.db.model_binance import HourlyQuote
 from data.data_processing import DataProcessor
 from utils.plotter import Plotter
 from utils.csv_exporter import CSVExporter
+import pandas as pd
 
-# Configura o caminho raiz
-src_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-sys.path.append(src_root) if src_root not in sys.path else None
+set_seed(Settings.SEED)
 
 def parse_args():
     """
@@ -61,10 +60,75 @@ def create_finetuning_folder():
     
     return full_path
 
+def save_finetuning_info(
+    global_csv_path,
+    base_path,
+    window_size,
+    dropout=None,
+    recurrent_dropout=None,
+    batch_size=None,
+    epochs=None,
+    patience=None,
+    learning_rate=None,
+    layers_config=None,
+    l1_reg=None,
+    l2_reg=None,
+    bidirectional=None,
+    activation_functions=None,
+    metrics=None,
+    train_loss=None,
+    val_loss=None,
+    start_date=None,
+    end_date=None,
+    target_column=None,
+    relevant_columns=None,
+    validation_split=None,
+    train_size=None,
+    steps_ahead=None,
+    gpu_used=None,
+    seed=None,
+    timestamp=None
+):
+    """
+    Salva informações detalhadas sobre o fine-tuning em um arquivo CSV global.
+    """
+    file_exists = os.path.exists(global_csv_path)
+    results = {
+        "timestamp": timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "output_path": base_path,
+        "window_size": window_size,
+        "layers_config": layers_config,
+        "dropout": dropout,
+        "recurrent_dropout": recurrent_dropout,
+        "batch_size": batch_size,
+        "epochs": epochs,
+        "patience": patience,
+        "learning_rate": learning_rate,
+        "l1_reg": l1_reg,
+        "l2_reg": l2_reg,
+        "bidirectional": bidirectional,
+        "activation_functions": activation_functions,
+        "metrics": metrics,
+        "train_loss": train_loss,
+        "val_loss": val_loss,
+        "start_date": start_date,
+        "end_date": end_date,
+        "target_column": target_column,
+        "relevant_columns": relevant_columns,
+        "validation_split": validation_split,
+        "train_size": train_size,
+        "steps_ahead": steps_ahead,
+        "gpu_used": gpu_used,
+        "seed": seed,
+    }
+    results_df = pd.DataFrame([results])
+    results_df.to_csv(global_csv_path, mode="a", header=not file_exists, index=False)
+
+
 def fine_tune_model(model_path, window_size, epochs, batch_size, patience, learning_rate):
     print(f"Carregando modelo existente de: {model_path}")
-    
-    # Carrega o modelo existente
+    global_csv_path = os.path.join("result", "fine_tuning", "finetuning_results.csv")
+
     model = load_model(model_path)
 
     # Configura o otimizador com nova taxa de aprendizado
@@ -117,6 +181,10 @@ def fine_tune_model(model_path, window_size, epochs, batch_size, patience, learn
         verbose=1
     )
 
+    train_loss = history.history['loss'][-1]
+    val_loss = history.history['val_loss'][-1]
+
+  
     # Salva resultados
     base_path = create_finetuning_folder()
     model_save_path = os.path.join(base_path, "models", "fine_tuned_model.h5")
@@ -127,7 +195,35 @@ def fine_tune_model(model_path, window_size, epochs, batch_size, patience, learn
     processor.load_scaler()
     y_pred = processor.inverse_transform(y_pred_scaled).flatten()
     y_test = processor.inverse_transform(y_test_scaled).flatten()
-
+  
+    save_finetuning_info(
+        global_csv_path=global_csv_path,
+        base_path=base_path,
+        window_size=window_size,
+        dropout=Settings.DROPOUT,
+        recurrent_dropout=Settings.RECURRENT_DROPOUT,
+        batch_size=batch_size,
+        epochs=epochs,
+        patience=patience,
+        learning_rate=learning_rate,
+        layers_config=Settings.LAYERS_CONFIG,
+        l1_reg=Settings.L1_REGULARIZATION,
+        l2_reg=Settings.L2_REGULARIZATION,
+        bidirectional=Settings.BIDIRECTIONAL,
+        activation_functions=Settings.ACTIVATION_FUNCTION,
+        metrics=Settings.METRICS,
+        train_loss=train_loss,
+        val_loss=val_loss,
+        start_date=Settings.START_DATE,
+        end_date=Settings.END_DATE,
+        target_column=Settings.TARGET_COLUMN,
+        relevant_columns=Settings.RELEVANT_COLUMNS,
+        validation_split=Settings.VALIDATION_SPLIT,
+        train_size=Settings.TRAIN_SIZE,
+        steps_ahead=Settings.STEPS_AHEAD,
+        gpu_used=Settings.USE_GPU,
+        seed=Settings.SEED
+    )
     # Salva previsões em CSV
     csv_exporter = CSVExporter()
     results_df = csv_exporter.save_predictions_to_csv(
