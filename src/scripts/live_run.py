@@ -1,6 +1,9 @@
 import os
 import sys
 import traceback
+import warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 src_root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 sys.path.append(src_root) if src_root not in sys.path else None
 from datetime import datetime, timedelta
@@ -11,9 +14,10 @@ from models.lstm_model import CustomLSTMTrainer
 from data.data_processing import DataProcessor
 from utils.technical_indicators import TechnicalIndicators
 from services.binance import BinanceData
-from config.settings import Settings
+from config.settings import Settings, set_seed
 from models.db.model_binance import HourlyQuote
 
+set_seed(Settings.SEED)
 
 def get_latest_binance_data(window_hours: int, symbol: str, interval: str) -> pd.DataFrame:
     """
@@ -25,14 +29,21 @@ def get_latest_binance_data(window_hours: int, symbol: str, interval: str) -> pd
     :return: DataFrame contendo os dados históricos.
     """
     binance = BinanceData()
-    end_time = datetime.utcnow()
+    
+    agora = datetime.utcnow()
+    print("Agora no get Binance:",agora)
+    if agora.minute != 0 and agora.second != 0 and agora.microsecond != 0:
+        agora -= timedelta(hours=1)
+
+    delta = timedelta(minutes=agora.minute, seconds=agora.second, microseconds=agora.microsecond)
+    end_time = agora - delta
+
     start_time = end_time - timedelta(hours=window_hours)
 
-    # Formatar as strings de datas
     start_str = start_time.strftime("%d %b, %Y %H:%M:%S")
     end_str = end_time.strftime("%d %b, %Y %H:%M:%S")
+    print("data final", end_str)
 
-    # Buscar dados históricos
     df = binance.get_historical_data(symbol, start_str=start_str, interval=interval, end_str=end_str)
     
     if df.empty:
@@ -55,7 +66,7 @@ def prepare_data_for_model(data: pd.DataFrame, processor: DataProcessor) -> np.n
     """
     # Selecionar apenas as colunas relevantes
     features = data[Settings.RELEVANT_COLUMNS].values
-    print(features)
+    #print(features)
     # Normalizar os dados com janela deslizante
     features_normalized = processor.normalize_sliding_window(features)
 
@@ -81,21 +92,17 @@ def live_run(symbol, interval, window_hours):
     print("Inicializando Live Run...")
     while True:
         try:
-            # Obter dados históricos
             data = get_latest_binance_data(window_hours, symbol, interval)
-            print(data.tail())
-            print(data)  # Para verificar os dados obtidos
+            #print(data.tail())
+            #print(data)  # Para verificar os dados obtidos
 
-            # Verificar se há dados suficientes para o modelo
-            if len(data) < Settings.WINDOW_SIZE:
+            if len(data) == Settings.WINDOW_SIZE:
                 print("Dados insuficientes para previsão. Aguardando novos dados...")
                 time.sleep(60)
                 continue
 
-            # Preparar os dados para o modelo
             X_input = prepare_data_for_model(data, processor)
 
-            # Fazer previsão
             predicted_scaled = model.predict(X_input)
 
             # Reverter a normalização
@@ -104,13 +111,18 @@ def live_run(symbol, interval, window_hours):
             std = features[-Settings.WINDOW_SIZE:].std(axis=0) + 1e-8
             predicted_value = (predicted_scaled * std[-1]) + mean[-1]
 
-            # Exibir resultados
             print(f"Previsão para {symbol}: {predicted_value[0][0]:.2f} (Preço atual: {data.iloc[-1]['close']:.2f})")
 
             # Calcular tempo até o próximo candle
-            current_time = datetime.utcnow()
-            sleep_time = 3600 - (current_time.minute * 60 + current_time.second)  # Ajuste para '1h'
-            time.sleep(sleep_time)
+            now = datetime.utcnow()
+            print("Agora no live Run:", now)
+            next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            print("Proxima Hora no live Run:", next_hour)
+            sleep_time = (next_hour - now).total_seconds()
+            print(f"Aguardando por {round(sleep_time/60,2)} minutos até a próxima hora.")
+            time.sleep(sleep_time+100)
+            print("Chegou na hora de realizar mais uma previsão!")
+
         except Exception as e:
             print(f"Erro durante a execução do Live Run: {e}")
             traceback.print_exc()
