@@ -161,19 +161,20 @@ if __name__ == "__main__":
 
     #### 1) Definimos um param_grid gigante
     param_grid = {
-        "dropout": [0.2, 0.3, 0.4],
+        "dropout": [0.2, 0.3, 0.4,0.5],
         "batch_size": [16, 32, 64, 128],
-        "epochs": [50],
+        "epochs": [500],
         "patience": [5],
         "layers_config": [
-            [64, 32], [128, 64], [256, 128],
-            [128, 64, 32], [256, 128, 64], [512, 256, 128],
-            [64, 64], [128, 128], [256, 256],
-            [128, 128, 128], [256, 256, 256], [512, 512, 512],
-            [64, 64, 32, 32], [128, 128, 64, 64],
-            [256, 256, 128, 128], [512, 512, 256, 256]
+            [128, 64], [64, 64], [256, 256], [256, 128],
+            [512, 512, 512], [128, 128], [128, 128, 128]
         ],
-        "window_size": [48, 72, 96, 120]
+        "window_size": [72, 96, 120, 148],
+        "LOSS_FUNCTION": ["mean_absolute_error","mean_squared_error"],
+        "ACTIVATION_FUNCTION": [
+        ["tanh", "relu"],
+        ["tanh", "tanh"]
+    ],
     }
 
     #### 2) Usamos a classe GridSearch só para gerar TODAS as combinações
@@ -197,7 +198,7 @@ if __name__ == "__main__":
     combos_half_2 = unprocessed_combos[half:]
 
     #### 5) Disparar os processos novamente
-    end_date = "2024-09-14 23:59:59"
+    end_date = "2025-01-19 23:59:59"
     relevant_cols = ["open", "high", "low", "close", "volume"]
     target_col = "close"
     steps_ahead = 1
