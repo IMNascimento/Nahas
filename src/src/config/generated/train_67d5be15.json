@@ -1,0 +1,12 @@
+{
+    "WINDOW_SIZE": 96,
+    "LAYERS_CONFIG": [
+        128,
+        64
+    ],
+    "DROPOUT": 0.2,
+    "OPTIMIZER": "Adam",
+    "EPOCHS": 100,
+    "BATCH_SIZE": 32,
+    "LOSS_FUNCTION": "mean_squared_error"
+}

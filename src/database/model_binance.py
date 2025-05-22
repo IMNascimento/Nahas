@@ -1,22 +1,9 @@
-from peewee import Model, MySQLDatabase, FloatField, DateTimeField
-from config.settings import Settings
+from peewee import FloatField, DateTimeField
 import pandas as pd
-
-# Configuração do banco de dados MySQL
-db = MySQLDatabase(
-    Settings.NAME_DB,
-    user=Settings.USER_DB,
-    password=Settings.PASSWORD_DB,
-    host=Settings.HOST_DB,
-    port=int(Settings.PORT_DB)
-)
-
-class BaseModel(Model):
-    class Meta:
-        database = db
+from database.model_base import BaseModel, db
 
 # Defina o modelo para cotações horárias
-class HourlyQuote(BaseModel):
+class HourlyQuoteBitcoin(BaseModel):
     timestamp = DateTimeField(unique=True)
     open = FloatField()
     high = FloatField()
@@ -28,10 +15,10 @@ class HourlyQuote(BaseModel):
         """
         Carrega os dados até uma data específica do banco de dados.
         """
-        query = (HourlyQuote
+        query = (HourlyQuoteBitcoin
                 .select()
-                .where(HourlyQuote.timestamp <= end_date)
-                .order_by(HourlyQuote.timestamp))
+                .where(HourlyQuoteBitcoin.timestamp <= end_date)
+                .order_by(HourlyQuoteBitcoin.timestamp))
         data = pd.DataFrame(list(query.dicts()))
         if not data.empty:
             data['timestamp'] = pd.to_datetime(data['timestamp'])
@@ -44,10 +31,10 @@ class HourlyQuote(BaseModel):
         """
         Carrega os dados a partir de uma data específica do banco de dados.
         """
-        query = (HourlyQuote
+        query = (HourlyQuoteBitcoin
                 .select()
-                .where(HourlyQuote.timestamp >= start_date)
-                .order_by(HourlyQuote.timestamp))
+                .where(HourlyQuoteBitcoin.timestamp >= start_date)
+                .order_by(HourlyQuoteBitcoin.timestamp))
         
         data = pd.DataFrame(list(query.dicts()))
         if not data.empty:
@@ -65,10 +52,10 @@ class HourlyQuote(BaseModel):
         :param end_date: Data final no formato 'YYYY-MM-DD HH:MM:SS'.
         :return: DataFrame com os dados filtrados.
         """
-        query = (HourlyQuote
+        query = (HourlyQuoteBitcoin
                 .select()
-                .where((HourlyQuote.timestamp >= start_date) & (HourlyQuote.timestamp <= end_date))
-                .order_by(HourlyQuote.timestamp))
+                .where((HourlyQuoteBitcoin.timestamp >= start_date) & (HourlyQuoteBitcoin.timestamp <= end_date))
+                .order_by(HourlyQuoteBitcoin.timestamp))
 
         data = pd.DataFrame(list(query.dicts()))
         if not data.empty:
@@ -81,7 +68,7 @@ class HourlyQuote(BaseModel):
 
 
 # Defina o modelo para cotações diárias
-class DailyQuote(BaseModel):
+class DailyQuoteBitcoin(BaseModel):
     timestamp = DateTimeField(unique=True)
     open = FloatField()
     high = FloatField()
@@ -90,7 +77,7 @@ class DailyQuote(BaseModel):
     volume = FloatField()
 
 # Defina o modelo para cotações semanais
-class WeeklyQuote(BaseModel):
+class WeeklyQuoteBitcoin(BaseModel):
     timestamp = DateTimeField(unique=True)
     open = FloatField()
     high = FloatField()
@@ -98,7 +85,7 @@ class WeeklyQuote(BaseModel):
     close = FloatField()
     volume = FloatField()
 
-class MonthlyQuote(BaseModel):
+class MonthlyQuoteBitcoin(BaseModel):
     timestamp = DateTimeField(unique=True)
     open = FloatField()
     high = FloatField()
@@ -108,7 +95,7 @@ class MonthlyQuote(BaseModel):
 
 # Crie as tabelas no banco de dados
 db.connect()
-db.create_tables([HourlyQuote, DailyQuote, WeeklyQuote, MonthlyQuote])
+db.create_tables([HourlyQuoteBitcoin, DailyQuoteBitcoin, WeeklyQuoteBitcoin, MonthlyQuoteBitcoin], safe=True)
 db.close()
 
 
