@@ -1,0 +1,86 @@
+{
+    "LOAD_MODEL": "result/train/a88ed1c1/models/model_a88ed1c1.h5",
+    "LOAD_MODEL_FINETUNING": "result/fine_tuning/model_a88ed1c1/20_01_2025_212229/models/fine_tuned_model.h5",
+    "END_DATE": "2025-01-19 23:59:59", 
+    "START_DATE": "2024-10-01 00:00:00",
+    "WINDOW_SIZE":96,
+    "STEPS_AHEAD": 1,
+    "LAYERS_CONFIG": [128, 64],
+    "ACTIVATION_FUNCTION": ["tanh", "tanh"],
+    "BIDIRECTIONAL": false,
+    "OUTPUT_UNITS": 1,
+    "DROPOUT": 0.2,
+    "RECURRENT_DROPOUT": null,
+    "L1_REGULARIZATION": null,
+    "L2_REGULARIZATION": null,
+    "LEARNING_RATE": 0.0001,
+    "OPTIMIZER": "Adam",
+    "BATCH_SIZE": 4,
+    "EPOCHS": 500,
+    "PATIENCE": 5,
+    "LOSS_FUNCTION": ["mean_squared_error"],
+    "METRICS": null,
+    "VALIDATION_SPLIT": 0.15,
+    "TRAIN_SIZE": 0.7,
+    "TARGET_COLUMN": "close",
+    "RELEVANT_COLUMNS": [
+        "close", "volume", "open", "low", "high"
+    ],
+    "INDICATORS_APPLY": {
+        "sma": [
+            {
+                "period": 14
+            }
+        ],
+        "ema": [
+            {
+                "period": 14
+            }
+        ],
+        "envelopes": [
+            {
+                "period": 14,
+                "percent": 3.0
+            }
+        ],
+        "rsi": [
+            {
+                "period": 14
+            }
+        ],
+        "macd": [
+            {
+                "fastperiod": 12,
+                "slowperiod": 26,
+                "signalperiod": 9
+            }
+        ],
+        "bollinger_bands": [
+            {
+                "period": 20,
+                "std_dev": 2.0
+            }
+        ],
+        "atr": [
+            {
+                "period": 14
+            }
+        ],
+        "adx": [
+            {
+                "period": 14
+            }
+        ],
+        "stochastic": [
+            {
+                "period": 14
+            }
+        ],
+        "fibonacci_retracement": [
+            {}
+        ],
+        "fibonacci_projection": [
+            {}
+        ]
+    }
+}
