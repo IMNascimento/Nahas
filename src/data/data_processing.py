@@ -1,4 +1,4 @@
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 import numpy as np
 import joblib
 import os
@@ -7,21 +7,25 @@ from utils.validation import DataValidator
 
 class DataProcessor:
     """
-    Classe responsável por processar dados para modelos LSTM.
+    Classe responsável por processar dados para modelos LSTM/Transformer, agora com seleção de scaler.
     """
 
-    def __init__(self, window_size: int):
-        """
-        Inicializa o processador de dados.
-
-        :param window_size: Tamanho da janela para criar as entradas dos modelos.
-        :param feature_range: Intervalo de normalização do MinMaxScaler.
-        """
+    def __init__(self, window_size: int, scaler_type: str = "standard"):
         DataValidator.validate_integer(window_size, min_value=1)
-
         self._window_size = window_size
-        self._scaler_X = StandardScaler()
-        self._scaler_y = StandardScaler()
+
+        # Permite selecionar o tipo de scaler
+        self._scaler_X, self._scaler_y = self._get_scaler(scaler_type), self._get_scaler(scaler_type)
+
+    def _get_scaler(self, scaler_type: str):
+        scalers = {
+            "standard": StandardScaler,
+            "minmax": MinMaxScaler,
+            "robust": RobustScaler,
+        }
+        if scaler_type not in scalers:
+            raise ValueError(f"Scaler '{scaler_type}' não suportado. Opções: {list(scalers.keys())}")
+        return scalers[scaler_type]()
 
     def normalize_sliding_window(self, data: np.ndarray) -> np.ndarray:
         """
