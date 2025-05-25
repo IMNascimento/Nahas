@@ -2,13 +2,35 @@ import os
 from dotenv import load_dotenv
 import random
 import numpy as np
+import sys
 
 load_dotenv()
+
+# Caminho absoluto da raiz do projeto (onde está a pasta src)
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Adiciona o diretório 'src' ao sys.path
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+
+# Caminho absoluto para a pasta 'config'
+CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+
+MODEL_TYPE_CLASSNAME = {
+    "lstm": "LSTM",
+    "transformer": "Transformer"
+}
+FRAMEWORK_CLASSNAME = {
+    "keras": "Keras",
+    "tensorflow": "TensorFlow",
+    "pytorch": "PyTorch",
+}
 
 def set_seed(seed: int):
     os.environ['PYTHONHASHSEED'] = str(seed)
     random.seed(seed)
     np.random.seed(seed)
+    # TensorFlow
     try:
         import tensorflow as tf
         tf.random.set_seed(seed)
@@ -17,7 +39,20 @@ def set_seed(seed: int):
     except ImportError:
         pass
 
+    # PyTorch
+    try:
+        import torch
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    except ImportError:
+        pass
+
     print(f"Seed configurada para {seed} em todas as libs disponíveis.")
+
+    
 
 class Settings:
     USER_DB = os.getenv("USER_DB")

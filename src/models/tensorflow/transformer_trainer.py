@@ -1,5 +1,3 @@
-# src/models/tensorflow/transformer_trainer.py
-
 from models.base.base_trainer import BaseTrainer
 from utils.validation import DataValidator
 import tensorflow as tf

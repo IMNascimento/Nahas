@@ -5,6 +5,7 @@ from keras.layers import LSTM, Dense, Bidirectional
 from keras.regularizers import l1_l2
 from keras.optimizers import Adam, SGD
 from keras.callbacks import EarlyStopping
+import numpy as np
 import os
 
 class KerasLSTMTrainer(BaseTrainer):
@@ -27,9 +28,10 @@ class KerasLSTMTrainer(BaseTrainer):
         activation_functions: list = None,
         kernel_initializer: str = "glorot_uniform",
         callbacks: list = None,
-        learning_rate: float = 0.001
+        learning_rate: float = 0.001, 
+        **kwargs
     ):
-        # Salva atributos
+        # Salva atributos e aceita expansão futura via kwargs
         self.input_shape = input_shape
         self.layers_config = layers_config
         self.dropout = dropout
@@ -46,7 +48,7 @@ class KerasLSTMTrainer(BaseTrainer):
         self.output_units = output_units
         self.activation_functions = activation_functions or ["tanh"] * len(layers_config or [1])
         self.kernel_initializer = kernel_initializer
-        self.callbacks = callbacks
+        self.callbacks = callbacks or []
         self.learning_rate = learning_rate
         self.model = None
 
@@ -100,14 +102,13 @@ class KerasLSTMTrainer(BaseTrainer):
                     kernel_initializer=self.kernel_initializer
                 ))
         model.add(Dense(self.output_units))
-
+        # Otimizador
         if self.optimizer.lower() == "adam":
             optimizer = Adam(learning_rate=self.learning_rate)
         elif self.optimizer.lower() == "sgd":
             optimizer = SGD(learning_rate=self.learning_rate)
         else:
             raise ValueError(f"Otimizador '{self.optimizer}' não suportado.")
-
         model.compile(optimizer=optimizer, loss=self.loss_fn, metrics=self.metrics)
         self.model = model
         return model
@@ -116,13 +117,35 @@ class KerasLSTMTrainer(BaseTrainer):
         if self.model is None:
             self.build_model()
         early_stopping = EarlyStopping(monitor="val_loss", patience=self.patience, restore_best_weights=True)
-        callbacks = [early_stopping] + (self.callbacks or [])
+        callbacks = [early_stopping] + self.callbacks
         self.model.fit(
             X_train, y_train,
             validation_data=(X_val, y_val),
             epochs=self.epochs,
             batch_size=self.batch_size,
-            callbacks=callbacks
+            callbacks=callbacks,
+            verbose=1
+        )
+        return self.model
+
+    def finetune(self, X_train, y_train, X_val, y_val, config: dict = None):
+        """
+        Executa fine-tuning do modelo já carregado.
+        Se config for passado, atualiza hiperparâmetros.
+        """
+        if config:
+            self.set_hyperparameters(**config)
+            self.build_model()  # Rebuild se a arquitetura mudou
+        # Treina mais epochs (continua do ponto atual)
+        early_stopping = EarlyStopping(monitor="val_loss", patience=self.patience, restore_best_weights=True)
+        callbacks = [early_stopping] + self.callbacks
+        self.model.fit(
+            X_train, y_train,
+            validation_data=(X_val, y_val),
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            callbacks=callbacks,
+            verbose=1
         )
         return self.model
 
@@ -138,3 +161,48 @@ class KerasLSTMTrainer(BaseTrainer):
 
     def predict(self, X):
         return self.model.predict(X)
+
+    def evaluate(self, X, y, metrics: list = None) -> dict:
+        # Usa métricas já definidas no compile, pode customizar se quiser
+        result = self.model.evaluate(X, y, return_dict=True)
+        return result
+
+    def validate_model(self) -> bool:
+        try:
+            assert self.model is not None
+            dummy = np.zeros((1, ) + self.input_shape)
+            self.model.predict(dummy)
+            return True
+        except Exception as e:
+            print(f"Erro de validação do modelo: {e}")
+            return False
+
+    def set_hyperparameters(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    def get_hyperparameters(self) -> dict:
+        params = {
+            'input_shape': self.input_shape,
+            'layers_config': self.layers_config,
+            'dropout': self.dropout,
+            'recurrent_dropout': self.recurrent_dropout,
+            'batch_size': self.batch_size,
+            'epochs': self.epochs,
+            'patience': self.patience,
+            'loss_fn': self.loss_fn,
+            'metrics': self.metrics,
+            'optimizer': self.optimizer,
+            'l1_reg': self.l1_reg,
+            'l2_reg': self.l2_reg,
+            'bidirectional': self.bidirectional,
+            'output_units': self.output_units,
+            'activation_functions': self.activation_functions,
+            'kernel_initializer': self.kernel_initializer,
+            'callbacks': self.callbacks,
+            'learning_rate': self.learning_rate
+        }
+        return params
+
+    def feature_importance(self):
+        raise NotImplementedError("Feature importance não implementado para LSTM.")

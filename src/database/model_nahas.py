@@ -1,35 +1,56 @@
-from peewee import FloatField, DateTimeField, AutoField, CharField, TextField, ForeignKeyField, IntegerField
+from peewee import FloatField, DateTimeField, AutoField, CharField, TextField, ForeignKeyField, IntegerField, BooleanField
 from datetime import datetime
 from database.model_base import BaseModel, db
 
 
-class Experiment(BaseModel):
-    id = AutoField()
-    type = CharField()  # 'grid', 'single', 'finetune', etc.
-    framework = CharField()  # 'keras', 'pytorch', etc.
-    model_type = CharField()  # 'lstm', 'transformer', etc.
-    hyperparams_json = TextField()  # JSON string com hiperparâmetros do experimento (ou JSONField)
-    hash_config = CharField(unique=True)
-    user = CharField(null=True)
-    status = CharField(default="created")  # 'created', 'running', 'finished', etc.
-    notes = TextField(null=True)
-    created_at = DateTimeField(default=datetime.now)
-    updated_at = DateTimeField(default=datetime.now)
-
 class TrainingRun(BaseModel):
     id = AutoField()
-    experiment = ForeignKeyField(Experiment, backref="runs")
-    run_uuid = CharField(unique=True)  # uuid4
+    run_uuid = CharField(unique=True)   # uuid4
+    status = CharField(default="started")
     start_time = DateTimeField(default=datetime.now)
     end_time = DateTimeField(null=True)
-    status = CharField(default="started")  # 'started', 'finished', 'failed', etc.
-    model_path = CharField(null=True)
-    csv_metrics_path = CharField(null=True)
-    metrics_json = TextField(null=True)  # JSON string com métricas
-    best_epoch = IntegerField(null=True)
-    log = TextField(null=True)
     created_at = DateTimeField(default=datetime.now)
     updated_at = DateTimeField(default=datetime.now)
+    model_path = CharField(null=True)
+    csv_metrics_path = CharField(null=True)
+    plot_dir = CharField(null=True)
+    config_path = CharField(null=True)  # Caminho para o JSON de config/hyperparams
+    metrics_json = TextField(null=True) # Principais métricas (json string)
+    framework = CharField(null=True)
+    model_type = CharField(null=True)
+    target_column = CharField(null=True)
+    seed = IntegerField(null=True)
+    gpu_used = BooleanField(null=True)
+    train_loss = FloatField(null=True)
+    val_loss = FloatField(null=True)
+    best_epoch = IntegerField(null=True)
+    log = TextField(null=True)
+
+
+class FineTuningRun(BaseModel):
+    id = AutoField()
+    original_run = ForeignKeyField(TrainingRun, backref="finetunes", to_field="run_uuid")  # Relaciona com o treino base
+    finetune_uuid = CharField(unique=True)  # uuid4
+    status = CharField(default="started")  # started, finished, failed, etc.
+    start_time = DateTimeField(default=datetime.now)
+    end_time = DateTimeField(null=True)
+    created_at = DateTimeField(default=datetime.now)
+    updated_at = DateTimeField(default=datetime.now)
+    # Novos arquivos e paths
+    finetuned_model_path = CharField(null=True)      # Caminho do novo modelo salvo
+    finetune_config_path = CharField(null=True)      # Caminho do config/hyperparams usado no fine-tune (json)
+    finetune_csv_metrics_path = CharField(null=True) # Caminho dos resultados CSV
+    finetune_plot_dir = CharField(null=True)         # Pasta de gráficos desta run de FT
+    metrics_json = TextField(null=True)              # Principais métricas (json string)
+    # Meta-infos relevantes do fine-tune
+    framework = CharField(null=True)
+    model_type = CharField(null=True)
+    seed = IntegerField(null=True)
+    gpu_used = BooleanField(null=True)
+    train_loss = FloatField(null=True)
+    val_loss = FloatField(null=True)
+    best_epoch = IntegerField(null=True)
+    log = TextField(null=True)                      
 
 class GridResult(BaseModel):
     id = AutoField()
@@ -44,7 +65,3 @@ class GridResult(BaseModel):
     created_at = DateTimeField(default=datetime.now)
     updated_at = DateTimeField(default=datetime.now)
 
-# Crie as tabelas no banco de dados
-db.connect()
-db.create_tables([Experiment, TrainingRun, GridResult], safe=True)
-db.close()

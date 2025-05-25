@@ -1,4 +1,3 @@
-# src/models/tensorflow/lstm_trainer.py
 from models.base.base_trainer import BaseTrainer
 import tensorflow as tf
 import os

@@ -46,40 +46,35 @@ class TechnicalIndicators:
             func = indicator_info["func"]
             required_columns = indicator_info["columns"]
 
-            # Validar a presença de colunas necessárias
             if not all(col in data.columns for col in required_columns):
                 print(f"Colunas insuficientes para calcular '{indicator_name}'. Necessárias: {required_columns}")
                 continue
 
             for params in params_list:
                 try:
-                    # Extraia os dados necessários para o cálculo
-                    args = [data[col] for col in required_columns]
+                    # Se existir, extrai e remove o nome customizado da coluna
+                    col_name = params.pop("col_name", None)
 
-                    # Calcule o indicador
+                    args = [data[col] for col in required_columns]
                     result = func(*args, **params)
 
-                    # Adicione o resultado ao DataFrame
                     if isinstance(result, pd.DataFrame):
-                        # Usa o nome das colunas geradas pelo indicador
+                        if col_name and len(result.columns) == 1:
+                            result.columns = [col_name]
                         data = pd.concat([data, result], axis=1)
                     else:
-                        # Nome do indicador
-                        param_suffix = "_".join([f"{k}_{v}" for k, v in params.items()])
-                        column_name = f"{indicator_name}_{param_suffix}" if param_suffix else indicator_name
+                        column_name = col_name or indicator_name
                         data[column_name] = result
 
                 except Exception as e:
                     print(f"Erro ao calcular o indicador '{indicator_name}' com parâmetros {params}: {e}")
 
-        # Substituir NaN por média (colunas originais) ou mínimo (colunas de indicador)
+        # Preenche valores ausentes
         for col in data.columns:
             if data[col].isna().any():
                 if col in ['open', 'high', 'low', 'close', 'volume']:
-                    # Para colunas originais
                     data[col].fillna(data[col].mean(), inplace=True)
                 else:
-                    # Para colunas de indicadores
                     data[col].fillna(data[col].min(), inplace=True)
 
         return data

@@ -1,10 +1,11 @@
 from models.base.base_trainer import BaseTrainer
 from utils.validation import DataValidator
 from keras.models import Model, load_model
-from keras.layers import Input, Dense, Dropout, LayerNormalization, MultiHeadAttention, Add
+from keras.layers import Input, Dense, Dropout, LayerNormalization, MultiHeadAttention, Lambda
 from keras.optimizers import Adam, SGD
 from keras.callbacks import EarlyStopping
 import tensorflow as tf
+import numpy as np
 import os
 
 def transformer_encoder_block(
@@ -38,7 +39,7 @@ def transformer_encoder_block(
 class KerasTransformerTrainer(BaseTrainer):
     def __init__(
         self,
-        input_shape: tuple,
+        input_shape: tuple = None,
         num_layers: int = 2,
         embed_dim: int = 32,
         num_heads: int = 2,
@@ -56,8 +57,8 @@ class KerasTransformerTrainer(BaseTrainer):
         activation: str = "relu",
         callbacks: list = None,
         learning_rate: float = 0.001,
+        **kwargs
     ):
-        # Atributos
         self.input_shape = input_shape
         self.num_layers = num_layers
         self.embed_dim = embed_dim
@@ -74,7 +75,7 @@ class KerasTransformerTrainer(BaseTrainer):
         self.l2_reg = l2_reg
         self.output_units = output_units
         self.activation = activation
-        self.callbacks = callbacks
+        self.callbacks = callbacks or []
         self.learning_rate = learning_rate
         self.model = None
 
@@ -116,18 +117,15 @@ class KerasTransformerTrainer(BaseTrainer):
             )
         x = Dense(16, activation="relu")(x)
         x = Dropout(self.dropout)(x)
-        x = Dense(self.output_units)(x)
-        outputs = x
-
+        x = Lambda(lambda t: t[:, -1, :])(x)  # Always extract last time step
+        outputs = Dense(self.output_units)(x)
         model = Model(inputs=inputs, outputs=outputs)
-
         if self.optimizer.lower() == "adam":
             optimizer = Adam(learning_rate=self.learning_rate)
         elif self.optimizer.lower() == "sgd":
             optimizer = SGD(learning_rate=self.learning_rate)
         else:
             raise ValueError(f"Otimizador '{self.optimizer}' não suportado.")
-
         model.compile(optimizer=optimizer, loss=self.loss_fn, metrics=self.metrics)
         self.model = model
         return model
@@ -136,13 +134,33 @@ class KerasTransformerTrainer(BaseTrainer):
         if self.model is None:
             self.build_model()
         early_stopping = EarlyStopping(monitor="val_loss", patience=self.patience, restore_best_weights=True)
-        callbacks = [early_stopping] + (self.callbacks or [])
+        callbacks = [early_stopping] + self.callbacks
         self.model.fit(
             X_train, y_train,
             validation_data=(X_val, y_val),
             epochs=self.epochs,
             batch_size=self.batch_size,
-            callbacks=callbacks
+            callbacks=callbacks,
+            verbose=1
+        )
+        return self.model
+
+    def finetune(self, X_train, y_train, X_val, y_val, config: dict = None):
+        """
+        Executa fine-tuning do modelo carregado. Se config for passado, atualiza hiperparâmetros.
+        """
+        if config:
+            self.set_hyperparameters(**config)
+            self.build_model()  # reconstrói arquitetura se mudou
+        early_stopping = EarlyStopping(monitor="val_loss", patience=self.patience, restore_best_weights=True)
+        callbacks = [early_stopping] + self.callbacks
+        self.model.fit(
+            X_train, y_train,
+            validation_data=(X_val, y_val),
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            callbacks=callbacks,
+            verbose=1
         )
         return self.model
 
@@ -158,3 +176,46 @@ class KerasTransformerTrainer(BaseTrainer):
 
     def predict(self, X):
         return self.model.predict(X)
+
+    def evaluate(self, X, y, metrics: list = None) -> dict:
+        return self.model.evaluate(X, y, return_dict=True)
+
+    def validate_model(self) -> bool:
+        try:
+            assert self.model is not None
+            dummy = np.zeros((1, ) + self.input_shape)
+            self.model.predict(dummy)
+            return True
+        except Exception as e:
+            print(f"Erro de validação do modelo: {e}")
+            return False
+
+    def set_hyperparameters(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    def get_hyperparameters(self) -> dict:
+        return {
+            'input_shape': self.input_shape,
+            'num_layers': self.num_layers,
+            'embed_dim': self.embed_dim,
+            'num_heads': self.num_heads,
+            'ff_dim': self.ff_dim,
+            'dropout': self.dropout,
+            'batch_size': self.batch_size,
+            'epochs': self.epochs,
+            'patience': self.patience,
+            'loss_fn': self.loss_fn,
+            'metrics': self.metrics,
+            'optimizer': self.optimizer,
+            'l1_reg': self.l1_reg,
+            'l2_reg': self.l2_reg,
+            'output_units': self.output_units,
+            'activation': self.activation,
+            'callbacks': self.callbacks,
+            'learning_rate': self.learning_rate
+        }
+
+    def feature_importance(self):
+        raise NotImplementedError("Feature importance não implementado para Transformer.")
+
