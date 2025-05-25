@@ -66,8 +66,11 @@ class DataValidator:
         return True
 
     @staticmethod
-    def validate_list(value, item_type=None, min_length=1, max_length=None):
+    def validate_list(value, item_type=None, min_length=1, max_length=None, allow_empty=None):
         """Valida se o valor é uma lista válida e opcionalmente valida os tipos dos itens."""
+        if allow_empty is not None:
+            min_length = 0 if allow_empty else min_length
+
         if not isinstance(value, list):
             raise ValidationError(f"Esperado uma lista, mas recebido {type(value).__name__}")
         

@@ -93,10 +93,6 @@ class MonthlyQuoteBitcoin(BaseModel):
     close = FloatField()
     volume = FloatField()
 
-# Crie as tabelas no banco de dados
-db.connect()
-db.create_tables([HourlyQuoteBitcoin, DailyQuoteBitcoin, WeeklyQuoteBitcoin, MonthlyQuoteBitcoin], safe=True)
-db.close()
 
 
 

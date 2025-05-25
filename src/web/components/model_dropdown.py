@@ -2,7 +2,7 @@ import streamlit as st
 
 def model_dropdown(models, key="model_select", label="Selecione um modelo salvo"):
     options = [
-        f"{m['created_at']} | {m['framework'].upper()}-{m['model_type'].capitalize()} | {m['hash_config']}"
+        f"{m['created_at']} | {m['framework'].upper()}-{m['model_type'].capitalize()} | {m['run_uuid']}"
         for m in models
     ]
     if not options:

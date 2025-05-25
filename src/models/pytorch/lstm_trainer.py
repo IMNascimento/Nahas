@@ -1,4 +1,3 @@
-# src/models/pytorch/lstm_trainer.py
 from models.base.base_trainer import BaseTrainer
 import torch
 import torch.nn as nn

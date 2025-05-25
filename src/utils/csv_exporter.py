@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 from typing import Union, Optional, Any, List
+import numpy as np
 
 
 class CSVExporter:
@@ -10,28 +11,32 @@ class CSVExporter:
     """
     def save_predictions_to_csv(
         self,
-        timestamps: Union[List[Any], pd.Series, pd.Index],
-        y_test: Union[List[float], pd.Series, pd.DataFrame],
-        y_pred: Union[List[float], pd.Series, pd.DataFrame],
-        output_path: str
-    ) -> pd.DataFrame:
-        """
-        Salva os resultados (valores reais e previstos) em um arquivo CSV.
+        timestamps,
+        y_test,
+        y_pred,
+        output_path,
+        steps_ahead=1,
+    ):
+        timestamps = np.array(timestamps)
+        y_test = np.array(y_test)
+        y_pred = np.array(y_pred)
 
-        :param timestamps: Coleção de timestamps (ou índices) correspondentes aos dados.
-        :param y_test: Valores reais.
-        :param y_pred: Valores previstos.
-        :param output_path: Caminho do arquivo CSV de saída.
-        :return: DataFrame com as colunas ["timestamp", "real_value", "predicted_value"].
-        """
-        directory = os.path.dirname(output_path)
-        if directory and not os.path.exists(directory):
-            os.makedirs(directory)
+        # Garante 2D
+        if y_test.ndim == 1:
+            y_test = y_test.reshape(-1, 1)
+        if y_pred.ndim == 1:
+            y_pred = y_pred.reshape(-1, 1)
 
+        n_samples, n_steps = y_test.shape
+
+        # Repete timestamp para cada step, empilha as previsões
+        expanded_timestamps = np.repeat(timestamps, n_steps)
+        steps = np.tile(np.arange(1, n_steps + 1), n_samples)
         results_df = pd.DataFrame({
-            "timestamp": timestamps,
-            "real_value": pd.Series(y_test).values,
-            "predicted_value": pd.Series(y_pred).values
+            "timestamp": expanded_timestamps,
+            "step": steps,
+            "real_value": y_test.flatten(),
+            "predicted_value": y_pred.flatten()
         })
         results_df.to_csv(output_path, index=False)
         print(f"Resultados salvos em: {output_path}")
