@@ -19,10 +19,10 @@ Nahas é uma ferramenta [descreva a principal funcionalidade ou objetivo do proj
 
 Antes de começar, certifique-se de ter as seguintes ferramentas instaladas:
 
-- [Python] versão 3.12.3
-- [Banco de Dados]
-- [Dependências principais]
-- [Outros requisitos]
+- [Python] versão 3.10.17
+- cuda 12.1
+- Pytorch v 2.5.1
+- tensorflow v 2.15
 
 ## Instalação
 
