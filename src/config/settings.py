@@ -52,7 +52,45 @@ def set_seed(seed: int):
 
     print(f"Seed configurada para {seed} em todas as libs disponíveis.")
 
-    
+def set_cuda_tensorflow(gpu_index=0):
+    """
+    Seta a GPU visível no TensorFlow/Keras.
+    Use ANTES de criar qualquer modelo!
+    """
+    try:
+        import tensorflow as tf
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            if gpu_index >= len(gpus):
+                print(f"[WARN] GPU {gpu_index} não disponível. Usando GPU 0.")
+                gpu_index = 0
+            tf.config.set_visible_devices(gpus[gpu_index], 'GPU')
+            tf.config.experimental.set_memory_growth(gpus[gpu_index], True)
+            print(f"[INFO] TensorFlow usará a GPU: {gpus[gpu_index].name}")
+        else:
+            print("[INFO] Nenhuma GPU encontrada. Usando CPU.")
+    except Exception as e:
+        print(f"[ERRO] ao configurar GPU no TensorFlow: {e}")
+
+
+def set_cuda_pytorch(gpu_index=0):
+    """
+    Seta a GPU no PyTorch.
+    Retorna o device a ser usado ao criar o modelo (model.to(device)).
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            device = torch.device(f"cuda:{gpu_index}")
+            print(f"[INFO] PyTorch usará o device: {device}")
+        else:
+            device = torch.device("cpu")
+            print("[INFO] CUDA não disponível. Usando CPU.")
+        return device
+    except Exception as e:
+        print(f"[ERRO] ao configurar GPU no PyTorch: {e}")
+        return torch.device("cpu")
+
 
 class Settings:
     USER_DB = os.getenv("USER_DB")

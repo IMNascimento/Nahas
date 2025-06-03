@@ -8,6 +8,21 @@ from keras.callbacks import EarlyStopping
 import numpy as np
 import os
 
+
+def check_data_stats(X_train, y_train, X_val, y_val):
+    arrays = [("X_train", X_train), ("y_train", y_train), ("X_val", X_val), ("y_val", y_val)]
+    for nome, arr in arrays:
+        arr = np.asarray(arr)
+        print(f"--- {nome} ---")
+        print(f"Shape: {arr.shape}")
+        print(f"Min: {np.min(arr)}, Max: {np.max(arr)}, Mean: {np.mean(arr)}, Std: {np.std(arr)}")
+        if np.isnan(arr).any():
+            print(f"[ERRO] {nome} contém NaN")
+        if np.isinf(arr).any():
+            print(f"[ERRO] {nome} contém Inf")
+    print("=" * 40)
+
+
 class KerasLSTMTrainer(BaseTrainer):
     def __init__(
         self,
@@ -116,6 +131,11 @@ class KerasLSTMTrainer(BaseTrainer):
     def train(self, X_train, y_train, X_val, y_val):
         if self.model is None:
             self.build_model()
+
+        # ===== Checagem de arrays e estatísticas =====
+        check_data_stats(X_train, y_train, X_val, y_val)
+        # =============================================
+
         early_stopping = EarlyStopping(monitor="val_loss", patience=self.patience, restore_best_weights=True)
         callbacks = [early_stopping] + self.callbacks
         self.model.fit(

@@ -3,16 +3,16 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import json
-from database.model_nahas import TrainingRun, FineTuningRun
+from database.model_nahas import TrainingRun, FineTuningRun, db
 from services.trainer_factory import TrainerFactory
 from data.data_processing import DataProcessor
 from utils.technical_indicators import TechnicalIndicators
 from utils.plotter import Plotter
 from utils.csv_exporter import CSVExporter
-from config.settings import BASE_DIR, Settings, set_seed
+from config.settings import BASE_DIR, Settings, set_seed, set_cuda_tensorflow, set_cuda_pytorch
 import random
-import time
 from services.binance import BinanceData
+
 
 def prepare_and_set_seed(config):
         # Usa a seed fornecida ou gera uma nova
@@ -24,6 +24,27 @@ def prepare_and_set_seed(config):
             print(f"Seed não fornecida. Gerada: {config['seed']}")
         set_seed(seed)  # sua função já universaliza para numpy, tf, etc.
         return seed
+
+def get_epochs_trained(model_or_history):
+    # Caso seja Keras/TensorFlow com .history
+    if hasattr(model_or_history, "history") and isinstance(model_or_history.history, dict):
+        # keras==3 pode ser dict
+        return len(model_or_history.history.get("loss", []))
+    if hasattr(model_or_history, "history") and hasattr(model_or_history.history, "epoch"):
+        return len(model_or_history.history.epoch)
+    if hasattr(model_or_history, "epoch"):  # pytorch-lightning style
+        return model_or_history.epoch if isinstance(model_or_history.epoch, int) else len(model_or_history.epoch)
+    # Caso vc tenha customizado para salvar o número de epochs (PyTorch puro)
+    if hasattr(model_or_history, "epochs_trained"):
+        return model_or_history.epochs_trained
+    # Se for o trainer PyTorch e você não salvou nada: retorna o número de epochs do config
+    if hasattr(model_or_history, "epochs"):
+        return model_or_history.epochs
+    # Se for um dicionário de history
+    if isinstance(model_or_history, dict):
+        if "loss" in model_or_history:
+            return len(model_or_history["loss"])
+    return None
 
 
 class ModelService:
@@ -82,6 +103,11 @@ class ModelService:
         """
         seed = prepare_and_set_seed(config)
         config["seed"] = seed
+        if config.get("use_gpu", True):
+            if framework.lower() in ("tensorflow", "keras"):
+                set_cuda_tensorflow(config.get("gpu_index", 0))
+            elif framework.lower() == "pytorch":
+                set_cuda_pytorch(config.get("gpu_index", 0))
         hash_id = run_id or config.get("run_id") or datetime.now().strftime("%Y%m%d_%H%M%S")
         base_path = self._get_save_dirs("train", hash_id)
         ext = {
@@ -198,52 +224,55 @@ class ModelService:
         )
 
          # 6. Salva no banco
-        TrainingRun.create(
-            run_uuid=hash_id,
-            start_time=config.get("start_date"),
-            end_time=config.get("end_date"),
-            status="finished",
-            model_path=model_path,
-            csv_metrics_path=csv_path,
-            plot_dir=os.path.join(base_path, "graficos"),
-            config_path=config_path,
-            framework=framework,
-            model_type=model_type,
-            target_column=config.get("target_column"),
-            seed=seed,         # ou Settings.SEED se preferir
-            gpu_used=Settings.USE_GPU,
-            train_loss=train_loss,
-            val_loss=val_loss,
-            best_epoch=int(model.history.epoch[-1]) if hasattr(model, "history") else None,
-            log=None,                           # log_msg pode ser None ou algum resumo do treino
-            # ...
-        )
         
-        # 6. Retorno
-        return {
-            "train_loss": float(train_loss) if train_loss else None,
-            "val_loss": float(val_loss) if val_loss else None,
-            "model_path": model_path,
-            "csv_path": csv_path,
-            "run_id": hash_id,
-            "results_path": base_path,
-        }
+        if db.is_closed():
+            db.connect()
+            
+        with db.atomic():
+            TrainingRun.create(
+                run_uuid=hash_id,
+                start_time=config.get("start_date"),
+                end_time=config.get("end_date"),
+                status="finished",
+                model_path=model_path,
+                csv_metrics_path=csv_path,
+                plot_dir=os.path.join(base_path, "graficos"),
+                config_path=config_path,
+                framework=framework,
+                model_type=model_type,
+                target_column=config.get("target_column"),
+                seed=seed,         # ou Settings.SEED se preferir
+                gpu_used=Settings.USE_GPU,
+                train_loss=train_loss,
+                val_loss=val_loss,
+                best_epoch=get_epochs_trained(model if not hasattr(model, "history") else model.history),
+                log=None,                           # log_msg pode ser None ou algum resumo do treino
+                # ...
+            )
+            
+            # 6. Retorno
+            return {
+                "train_loss": float(train_loss) if train_loss else None,
+                "val_loss": float(val_loss) if val_loss else None,
+                "model_path": model_path,
+                "csv_path": csv_path,
+                "run_id": hash_id,
+                "results_path": base_path,
+            }
 
-    def finetune(
-        self, 
-        model_path, 
-        config, 
-        framework, 
-        model_type, 
-        original_run_id,  # ID do TrainingRun original
-        run_id=None
-    ):
+    def finetune(self, model_path, config, framework, model_type, original_run_id, run_id=None):
         """
         Fine-tuning universal + registro na tabela FineTuningRun.
         """
 
         hash_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         base_path = self._get_save_dirs("finetune", hash_id)
+        if config.get("use_gpu", True):
+            if framework.lower() in ("tensorflow", "keras"):
+                set_cuda_tensorflow(config.get("gpu_index", 0))
+            elif framework.lower() == "pytorch":
+                set_cuda_pytorch(config.get("gpu_index", 0))
+
         ext = {
             "keras": ".keras",
             "tensorflow": ".keras",
@@ -422,8 +451,7 @@ class ModelService:
         processor.load_scaler(scaler_dir)
 
         # 3. Busca dados recentes da Binance
-        from services.binance import BinanceData
-        from datetime import datetime, timedelta
+        
 
         binance = BinanceData()
         agora = datetime.utcnow()

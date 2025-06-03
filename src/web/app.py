@@ -7,6 +7,8 @@ import json
 import uuid
 from db_helpers import list_all_models
 from components.model_dropdown import model_dropdown
+from components.gpu_selector import gpu_selector
+
 import datetime
 from services.model_service import ModelService
 import time
@@ -166,6 +168,7 @@ with tabs[1]:
     st.subheader("Escolha do Modelo e o Framework")
     framework = st.selectbox("Framework", frameworks, key="framework_train")
     model_type = st.selectbox("Modelo", model_types, key="model_type_train")
+    use_gpu, gpu_index, gpu_label = gpu_selector(framework, key_prefix="train")
     st.subheader("Colunas Financeiras e alvos(target)")
     indicator_columns = []
     indicators_apply = {}
@@ -338,6 +341,12 @@ with tabs[1]:
                 config["l1_reg"] = l1
                 config["l2_reg"] = l2
             
+            if use_gpu:
+                config["use_gpu"] = True
+                config["gpu_index"] = gpu_index
+            else:
+                config["use_gpu"] = False
+                config["gpu_index"] = None
             if use_seed:
                 config["seed"] = int(seed)
             # Chama service universal
@@ -354,6 +363,7 @@ with tabs[2]:
     st.header("Fine-tuning de Modelo")
     models = list_all_models()
     selected_model = model_dropdown(models, key="finetune_model")
+    use_gpu_ft, gpu_index_ft, gpu_label_ft = gpu_selector(selected_model["framework"], key_prefix="finetune")
 
     if selected_model:
         st.code(f"Modelo selecionado: {selected_model['model_path']}")
@@ -369,7 +379,7 @@ with tabs[2]:
         batch_size = st.number_input("Batch Size", value=config.get("batch_size", 32))
         epochs = st.number_input("Epochs (Fine-tune)", value=config.get("epochs", 10))
         patience = st.number_input("Patience", value=config.get("patience", 5))
-        learning_rate = st.number_input("Learning Rate", value=config.get("learning_rate", 0.001), format="%.5f")
+        learning_rate = st.number_input("Learning Rate", value=config.get("learning_rate", 0.0001), format="%.5f")
         dropout = st.number_input("Dropout", value=config.get("dropout", 0.2), format="%.2f")
         optimizer = st.selectbox("Optimizer", ["Adam", "RMSprop", "SGD"], index=["Adam", "RMSprop", "SGD"].index(config.get("optimizer", "Adam")))
         loss_fn = st.selectbox("Função de Perda", ["mean_squared_error", "mean_absolute_error", "mse"], index=["mean_squared_error", "mean_absolute_error", "mse"].index(config.get("loss_fn", "mean_squared_error")))
@@ -435,6 +445,12 @@ with tabs[2]:
             else:
                 if "seed" in new_config:
                     del new_config["seed"]
+            if use_gpu_ft:
+                new_config["use_gpu"] = True
+                new_config["gpu_index"] = gpu_index_ft
+            else:
+                new_config["use_gpu"] = False
+                new_config["gpu_index"] = None
 
             # Campos específicos LSTM
             if selected_model["model_type"].lower() == "lstm":

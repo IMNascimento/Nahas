@@ -7,21 +7,67 @@ from utils.validation import DataValidator
 
 class DataProcessor:
     """
-    Processamento universal para séries temporais com janela deslizante, remoção automática do alvo,
-    suporte a steps_ahead>1 e normalização flexível.
+    Classe para processamento universal de dados de séries temporais, com:
+      - Geração de janelas deslizantes (windowing)
+      - Suporte a targets multi-passos (steps_ahead)
+      - Normalização flexível (StandardScaler, MinMaxScaler ou RobustScaler)
+      - Compatibilidade com DataFrame do Pandas ou ndarray do NumPy
+      - Métodos para split temporal (train/val/test) preservando a ordem da série
+      - Persistência de scalers para reprodução dos experimentos
 
-    Returns:
-        X: ndarray (n_samples, window_size, n_features)
-        y: ndarray (n_samples, steps_ahead)
-            * Se steps_ahead=1: shape (n_samples, 1)
-            * Se steps_ahead>1: shape (n_samples, steps_ahead)
+    Parâmetros
+    ----------
+    window_size : int
+        Tamanho da janela deslizante (número de amostras de histórico usadas para prever o próximo valor/step).
+    scaler_type : str, default="standard"
+        Tipo de normalização a ser usada. Opções:
+        - "standard": z-score (média=0, std=1)
+        - "minmax": intervalo [0, 1]
+        - "robust": robusto a outliers (mediana/IQR)
+
+    Métodos Principais
+    ------------------
+    create_windows(data, coluna_alvo, steps_ahead)
+        Cria janelas deslizantes de features e targets para previsão (supervisionada) de séries temporais.
+    split_data(X, y, train_size, validation_size)
+        Divide as amostras em conjuntos de treino, validação e teste, mantendo a ordem temporal.
+    normalize(X, y)
+        Normaliza X e y usando o scaler escolhido (apenas nos dados de treino).
+    apply_normalization(X, y)
+        Aplica os scalers ajustados para normalizar conjuntos de validação/teste.
+    inverse_transform(y_scaled)
+        Reverte a normalização de y para o domínio original.
+    save_scaler(dir_path)
+        Salva os scalers de X e y para posterior reprodução dos experimentos.
+    load_scaler(dir_path)
+        Carrega os scalers previamente salvos.
+
+    Uso Típico
+    ----------
+    processor = DataProcessor(window_size=96, scaler_type="standard")
+    X, y = processor.create_windows(df, coluna_alvo="close", steps_ahead=1)
+    X_train, X_val, X_test, y_train, y_val, y_test = processor.split_data(X, y, train_size=0.7, validation_size=0.15)
+    X_train_scaled, y_train_scaled = processor.normalize(X_train, y_train)
+    processor.save_scaler("meu_diretorio_scalers")
+    # ...
+    X_val_scaled, y_val_scaled = processor.apply_normalization(X_val, y_val)
+    # ...
+    y_pred_real = processor.inverse_transform(y_pred_scaled)
     """
 
     def __init__(self, window_size: int, scaler_type: str = "standard"):
+        """
+        Inicializa o DataProcessor.
+
+        Parâmetros
+        ----------
+        window_size : int
+            Tamanho da janela deslizante.
+        scaler_type : str, default="standard"
+            Tipo do scaler: "standard", "minmax", ou "robust".
+        """
         DataValidator.validate_integer(window_size, min_value=1)
         self._window_size = window_size
-
-        # Escolha de scaler
         self._scaler_X, self._scaler_y = self._get_scaler(scaler_type), self._get_scaler(scaler_type)
 
     def _get_scaler(self, scaler_type: str):
@@ -38,14 +84,19 @@ class DataProcessor:
         """
         Cria janelas deslizantes de features e targets para previsão de séries temporais.
 
-        Args:
-            data: DataFrame com os dados (obrigatório incluir a coluna alvo!)
-            coluna_alvo: nome da coluna target
-            steps_ahead: número de passos à frente para prever
+        Parâmetros
+        ----------
+        data : pd.DataFrame ou np.ndarray
+            Dados de entrada. Obrigatório conter a coluna alvo se for DataFrame.
+        coluna_alvo : str
+            Nome da coluna target (obrigatório se data for DataFrame).
+        steps_ahead : int, default=1
+            Número de passos futuros a serem previstos (output multi-step).
 
-        Returns:
-            X: (n_samples, window_size, n_features)
-            y: (n_samples, steps_ahead)   [sempre 2D]
+        Retorna
+        -------
+        X : np.ndarray (n_samples, window_size, n_features)
+        y : np.ndarray (n_samples, steps_ahead)
         """
         DataValidator.validate_integer(steps_ahead, min_value=1)
         if not isinstance(data, (pd.DataFrame, np.ndarray)):
@@ -55,7 +106,6 @@ class DataProcessor:
 
         if isinstance(data, pd.DataFrame):
             assert coluna_alvo is not None, "coluna_alvo deve ser informada para DataFrame!"
-            # Remove coluna alvo das features!
             if coluna_alvo not in data.columns:
                 raise ValueError(f"Coluna alvo '{coluna_alvo}' não encontrada no DataFrame.")
             target_col = data[coluna_alvo].values
@@ -71,7 +121,6 @@ class DataProcessor:
                          else data[i:i + steps_ahead])
 
         X, y = np.array(X), np.array(y)
-        # Ajusta shapes para universalidade
         if len(X.shape) == 2:
             X = X.reshape(X.shape[0], X.shape[1], 1)
         if len(y.shape) == 1:
@@ -82,7 +131,22 @@ class DataProcessor:
 
     def split_data(self, X: np.ndarray, y: np.ndarray, train_size: float = 0.7, validation_size: float = 0.15) -> tuple:
         """
-        Divide X e y em conjuntos de treino, validação e teste (mantendo ordem temporal).
+        Divide X e y em conjuntos de treino, validação e teste, preservando a ordem temporal.
+
+        Parâmetros
+        ----------
+        X : np.ndarray
+            Features.
+        y : np.ndarray
+            Targets.
+        train_size : float, default=0.7
+            Fração dos dados para treino.
+        validation_size : float, default=0.15
+            Fração dos dados para validação.
+
+        Retorna
+        -------
+        X_train, X_val, X_test, y_train, y_val, y_test : np.ndarray
         """
         DataValidator.validate_float(train_size, min_value=0.0, max_value=1.0)
         DataValidator.validate_float(validation_size, min_value=0.0, max_value=1.0)
@@ -105,6 +169,17 @@ class DataProcessor:
     def normalize(self, X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
         Normaliza X e y (apenas treino). X: (n, window, features), y: (n, steps)
+
+        Parâmetros
+        ----------
+        X : np.ndarray
+            Features de treino.
+        y : np.ndarray
+            Targets de treino.
+
+        Retorna
+        -------
+        X_train_scaled, y_train_scaled : np.ndarray
         """
         DataValidator.validate_list(list(X.shape), item_type=int, min_length=3)
         DataValidator.validate_list(list(y.shape), item_type=int, min_length=1)
@@ -119,6 +194,17 @@ class DataProcessor:
     def apply_normalization(self, X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
         Aplica scaler já treinado nos dados (validação/teste).
+
+        Parâmetros
+        ----------
+        X : np.ndarray
+            Features.
+        y : np.ndarray
+            Targets.
+
+        Retorna
+        -------
+        X_normalized, y_normalized : np.ndarray
         """
         try:
             X_normalized = self._scaler_X.transform(X.reshape(-1, X.shape[2])).reshape(X.shape)
@@ -130,6 +216,16 @@ class DataProcessor:
     def inverse_transform(self, y_scaled: np.ndarray) -> np.ndarray:
         """
         Reverte a normalização de y (2D).
+
+        Parâmetros
+        ----------
+        y_scaled : np.ndarray
+            Targets normalizados.
+
+        Retorna
+        -------
+        y_original : np.ndarray
+            Targets no domínio original.
         """
         DataValidator.validate_list(list(y_scaled.shape), item_type=int, min_length=1)
         shape = y_scaled.shape
@@ -137,11 +233,26 @@ class DataProcessor:
         return inv
 
     def save_scaler(self, dir_path: str):
+        """
+        Salva os scalers de X e y para reuso posterior.
+
+        Parâmetros
+        ----------
+        dir_path : str
+            Diretório onde os scalers serão salvos.
+        """
         os.makedirs(dir_path, exist_ok=True)
         joblib.dump(self._scaler_X, os.path.join(dir_path, 'scaler_X.pkl'))
         joblib.dump(self._scaler_y, os.path.join(dir_path, 'scaler_y.pkl'))
 
     def load_scaler(self, dir_path: str):
+        """
+        Carrega os scalers de X e y previamente salvos.
+
+        Parâmetros
+        ----------
+        dir_path : str
+            Diretório de onde os scalers serão carregados.
+        """
         self._scaler_X = joblib.load(os.path.join(dir_path, 'scaler_X.pkl'))
         self._scaler_y = joblib.load(os.path.join(dir_path, 'scaler_y.pkl'))
-
