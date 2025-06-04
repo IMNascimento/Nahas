@@ -12,6 +12,7 @@ from utils.csv_exporter import CSVExporter
 from config.settings import BASE_DIR, Settings, set_seed, set_cuda_tensorflow, set_cuda_pytorch
 import random
 from services.binance import BinanceData
+from utils.db_utils import ensure_db_connection
 
 
 def prepare_and_set_seed(config):
@@ -225,40 +226,37 @@ class ModelService:
 
          # 6. Salva no banco
         
-        if db.is_closed():
-            db.connect()
             
-        with db.atomic():
-            TrainingRun.create(
-                run_uuid=hash_id,
-                start_time=config.get("start_date"),
-                end_time=config.get("end_date"),
-                status="finished",
-                model_path=model_path,
-                csv_metrics_path=csv_path,
-                plot_dir=os.path.join(base_path, "graficos"),
-                config_path=config_path,
-                framework=framework,
-                model_type=model_type,
-                target_column=config.get("target_column"),
-                seed=seed,         # ou Settings.SEED se preferir
-                gpu_used=Settings.USE_GPU,
-                train_loss=train_loss,
-                val_loss=val_loss,
-                best_epoch=get_epochs_trained(model if not hasattr(model, "history") else model.history),
-                log=None,                           # log_msg pode ser None ou algum resumo do treino
-                # ...
-            )
+        ensure_db_connection()
+        TrainingRun.create(
+            run_uuid=hash_id,
+            start_time=config.get("start_date"),
+            end_time=config.get("end_date"),
+            status="finished",
+            model_path=model_path,
+            csv_metrics_path=csv_path,
+            plot_dir=os.path.join(base_path, "graficos"),
+            config_path=config_path,
+            framework=framework,
+            model_type=model_type,
+            target_column=config.get("target_column"),
+            seed=seed,         # ou Settings.SEED se preferir
+            gpu_used=Settings.USE_GPU,
+            train_loss=train_loss,
+            val_loss=val_loss,
+            best_epoch=get_epochs_trained(model if not hasattr(model, "history") else model.history),
+            log=None,                           # log_msg pode ser None ou algum resumo do treino
+        )
             
-            # 6. Retorno
-            return {
-                "train_loss": float(train_loss) if train_loss else None,
-                "val_loss": float(val_loss) if val_loss else None,
-                "model_path": model_path,
-                "csv_path": csv_path,
-                "run_id": hash_id,
-                "results_path": base_path,
-            }
+        # 6. Retorno
+        return {
+            "train_loss": float(train_loss) if train_loss else None,
+            "val_loss": float(val_loss) if val_loss else None,
+            "model_path": model_path,
+            "csv_path": csv_path,
+            "run_id": hash_id,
+            "results_path": base_path,
+        }
 
     def finetune(self, model_path, config, framework, model_type, original_run_id, run_id=None):
         """
@@ -386,6 +384,7 @@ class ModelService:
         metrics_json = json.dumps(metrics_dict, indent=4)
 
         # Salva registro do fine-tuning no banco
+        ensure_db_connection()
         fine_tune_run = FineTuningRun.create(
             original_run=original_run_id,
             finetune_uuid=hash_id,
