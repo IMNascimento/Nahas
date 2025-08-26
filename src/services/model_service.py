@@ -136,7 +136,7 @@ class ModelService:
             original_timestamps = data_df['timestamp'].values
             data_df = data_df[config.get("relevant_columns")]
             window_size = config.get("window_size")
-            processor = DataProcessor(window_size=window_size)
+            processor = DataProcessor(window_size=window_size, scaler_type="robust")
             X, y = processor.create_windows(
                 data=data_df, coluna_alvo=config.get("target_column"), steps_ahead=config.get("steps_ahead")
             )
@@ -298,7 +298,7 @@ class ModelService:
         original_timestamps = data_df['timestamp'].values
         data_df = data_df[config.get("relevant_columns")]
         window_size = config.get("window_size")
-        processor = DataProcessor(window_size=window_size)
+        processor = DataProcessor(window_size=window_size, scaler_type="robust")
         X, y = processor.create_windows(
             data=data_df, coluna_alvo=config.get("target_column"), steps_ahead=config.get("steps_ahead")
         )
@@ -445,7 +445,7 @@ class ModelService:
         TrainerClass = TrainerFactory.get_trainer(framework, model_type)
         trainer = TrainerClass(input_shape=(window_size, len(relevant_columns)), **config)
         model = trainer.load_model(model_path)
-        processor = DataProcessor(window_size=window_size)
+        processor = DataProcessor(window_size=window_size, scaler_type="robust")
         scaler_dir = os.path.join(os.path.dirname(os.path.dirname(model_path)), "scaler")
         processor.load_scaler(scaler_dir)
 
