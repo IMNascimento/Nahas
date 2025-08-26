@@ -256,3 +256,93 @@ class DataProcessor:
         """
         self._scaler_X = joblib.load(os.path.join(dir_path, 'scaler_X.pkl'))
         self._scaler_y = joblib.load(os.path.join(dir_path, 'scaler_y.pkl'))
+
+
+    def get_outliers_quartis(self, data, feature_names=None, print_summary=True):
+        """
+        Exibe/retorna os outliers de cada feature com base nos quartis (IQR).
+
+        Parâmetros
+        -----------
+        data : np.ndarray ou pd.DataFrame
+            Dados de entrada. Espera shape (n_samples, window, n_features) ou (n_samples, n_features).
+        feature_names : list, default=None
+            Nomes das features (opcional).
+        print_summary : bool, default=True
+            Se True, imprime o resumo dos outliers.
+
+        Retorna
+        -------
+        outliers_dict : dict
+            Dicionário {nome_da_feature: índices_dos_outliers}
+        """
+        # Suporta janela 3D (n, window, feat) ou 2D
+        if isinstance(data, pd.DataFrame):
+            arr = data.values
+            feature_names = data.columns.tolist() if feature_names is None else feature_names
+        else:
+            arr = data
+            if arr.ndim == 3:
+                arr = arr.reshape(-1, arr.shape[2])
+            elif arr.ndim == 2:
+                arr = arr
+            else:
+                raise ValueError("Os dados precisam ser 2D ou 3D (janela deslizante)")
+
+        n_feats = arr.shape[1]
+        outliers_dict = {}
+        feature_names = feature_names if feature_names is not None else [f"feat_{i}" for i in range(n_feats)]
+        for i in range(n_feats):
+            col = arr[:, i]
+            q1 = np.percentile(col, 25)
+            q3 = np.percentile(col, 75)
+            iqr = q3 - q1
+            lower = q1 - 1.5 * iqr
+            upper = q3 + 1.5 * iqr
+            outliers = np.where((col < lower) | (col > upper))[0]
+            outliers_dict[feature_names[i]] = outliers
+            if print_summary:
+                print(f"[OUTLIER] {feature_names[i]}: {len(outliers)} outliers (limites: {lower:.2f}, {upper:.2f})")
+        return outliers_dict
+
+    def normalize_with_quartis(self, data):
+        """
+        Normaliza os dados usando mediana (centro) e IQR (escala) — igual ao RobustScaler,
+        mas implementado manualmente.
+
+        Parâmetros
+        -----------
+        data : np.ndarray ou pd.DataFrame
+            Dados de entrada. Espera shape (n_samples, n_features) ou (n_samples, window, n_features).
+
+        Retorna
+        -------
+        data_normalized : np.ndarray
+            Dados normalizados.
+        """
+        if isinstance(data, pd.DataFrame):
+            arr = data.values
+        else:
+            arr = data
+
+        if arr.ndim == 3:
+            arr_2d = arr.reshape(-1, arr.shape[2])
+        elif arr.ndim == 2:
+            arr_2d = arr
+        else:
+            raise ValueError("Os dados precisam ser 2D ou 3D (janela deslizante)")
+
+        mediana = np.median(arr_2d, axis=0)
+        q1 = np.percentile(arr_2d, 25, axis=0)
+        q3 = np.percentile(arr_2d, 75, axis=0)
+        iqr = q3 - q1
+
+        # Evita divisão por zero (iqr == 0)
+        iqr[iqr == 0] = 1e-9
+
+        arr_norm = (arr_2d - mediana) / iqr
+
+        # Retorna no mesmo formato original
+        if arr.ndim == 3:
+            arr_norm = arr_norm.reshape(arr.shape)
+        return arr_norm
