@@ -14,7 +14,7 @@ from utils.csv_exporter import CSVExporter
 from config.settings import BASE_DIR, Settings, set_seed, set_cuda_tensorflow, set_cuda_pytorch
 from services.binance import BinanceData
 from utils.db_utils import ensure_db_connection
-
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from data.evomsn_normalizer import EvoMSNNormalizer, EvoMSNLikeNormalizer
 
 
@@ -45,10 +45,31 @@ def get_epochs_trained(model_or_history):
         return len(model_or_history["loss"])
     return None
 
+def _parse_dt(x):
+    if isinstance(x, datetime):
+        return x
+    if isinstance(x, str):
+        # mesmo formato que você grava na config
+        return datetime.strptime(x, "%Y-%m-%d %H:%M:%S")
+    return datetime.now()
+
 
 class ModelService:
     def __init__(self):
         pass
+
+    # -------------------------
+    # métricas básicas
+    # -------------------------
+    @staticmethod
+    def _compute_basic_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+        yt = np.asarray(y_true).reshape(-1)
+        yp = np.asarray(y_pred).reshape(-1)
+        mse = float(mean_squared_error(yt, yp))
+        rmse = float(np.sqrt(mse))
+        mae = float(mean_absolute_error(yt, yp))
+        r2  = float(r2_score(yt, yp))
+        return {"mse": mse, "rmse": rmse, "mae": mae, "r2": r2}
 
     # -------------------------
     # infra de pastas
@@ -98,7 +119,7 @@ class ModelService:
         x_mode = norm.get("x_mode", "zscore")             # local
         y_mode = norm.get("y_mode", "none")               # local
 
-        # EvoMSN params (CORREÇÃO #2: adiciona evomsn_predictor)
+        # EvoMSN params
         ev_k   = int(norm.get("evomsn_k_scales", config.get("evomsn_k_scales", 4)))
         ev_agg = norm.get("evomsn_agg", "fft")            # "fft" | "uniform"
         ev_pred = norm.get("evomsn_predictor", config.get("evomsn_predictor", "linear"))  # "linear" | "mlp"
@@ -156,6 +177,7 @@ class ModelService:
         csv_path = os.path.join(base_path, "csv", f"results_{hash_id}.csv")
         scaler_dir = os.path.join(base_path, "scaler")
         config_path = os.path.join(base_path, "hiperparams", f"config_{hash_id}.json")
+        metrics_path = os.path.join(base_path, "metrics.json")
 
         with open(config_path, "w") as f:
             json.dump(config, f, indent=4)
@@ -216,27 +238,30 @@ class ModelService:
             # -------------------------
             # normalização por estratégia
             # -------------------------
+            ctx_train_local = None   # usado só se local
+            ctx_train_msn   = None   # usado só se evomsn/like
+
             if norm_strategy == "global":
                 X_train_scaled, y_train_scaled = processor.normalize_global(X_train, y_train)
                 processor.save_scaler(scaler_dir)
                 X_val_scaled,  y_val_scaled  = processor.apply_normalization_global(X_val,  y_val)
                 X_test_scaled, y_test_scaled = processor.apply_normalization_global(X_test, y_test)
                 inverse_kind = "global"
-                inverse_ctx = None
+                inverse_ctx_test = None
 
             elif norm_strategy == "local":
                 target_idx = X_train.shape[2] - 1 if self._y_mode_needs_target_in_X(y_mode) else 0
-                X_train_scaled, y_train_scaled, _ = processor.normalize_local(
+                # guarde ctx do TREINO para inversão de métricas do treino
+                X_train_scaled, y_train_scaled, ctx_train_local = processor.normalize_local(
                     X_train, y_train, x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
                 )
                 X_val_scaled, y_val_scaled, _ = processor.apply_normalization_local(
                     X_val, y_val, x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
                 )
-                X_test_scaled, y_test_scaled, ctx_test = processor.apply_normalization_local(
+                X_test_scaled, y_test_scaled, inverse_ctx_test = processor.apply_normalization_local(
                     X_test, y_test, x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
                 )
                 inverse_kind = "local"
-                inverse_ctx = ctx_test
 
             else:  # "evomsn" ou "evomsn_like"
                 if norm_strategy == "evomsn":
@@ -248,7 +273,7 @@ class ModelService:
                         k_scales=int(evcfg["k_scales"]),
                         agg=str(evcfg.get("agg", "fft")),
                         random_state=seed,
-                        predictor_type=str(evcfg.get("predictor", "linear")),  # <- CORREÇÃO #2
+                        predictor_type=str(evcfg.get("predictor", "linear")),
                     )
                 else:
                     msn = EvoMSNLikeNormalizer(
@@ -263,11 +288,15 @@ class ModelService:
 
                 # treino MSN (períodos globais a partir de X_train)
                 X_train_scaled, y_train_scaled = msn.fit(X_train, y_train, save_path=scaler_dir)
+                # obtenha ctx também para o CONJUNTO DE TREINO (para inversão das métricas)
+                _Xtr_tmp, _ytr_tmp, ctx_train_msn = msn.transform(X_train, None, target_windows=tw_train)
                 # validação e teste com pesos via janela do alvo
-                X_val_scaled,  y_val_scaled,  ctx_val  = msn.transform(X_val,  y_val,  target_windows=tw_val)
-                X_test_scaled, _y_dummy,     ctx_test = msn.transform(X_test, None,   target_windows=tw_test)
+                X_val_scaled,  y_val_scaled,  _ctx_val  = msn.transform(X_val,  y_val,  target_windows=tw_val)
+                X_test_scaled, _y_dummy,     inverse_ctx_test = msn.transform(X_test, None,   target_windows=tw_test)
                 inverse_kind = "evomsn"
-                inverse_ctx = (msn, ctx_test)
+
+                # empacote objeto e ctx de teste para a etapa de inversão
+                inverse_ctx_test = (msn, inverse_ctx_test)
 
         else:
             raise NotImplementedError("Treino com X,y externos ainda não implementado.")
@@ -292,37 +321,97 @@ class ModelService:
             train_loss, val_loss = trainer.get_last_metrics()
 
         # -------------------------
-        # 4) Predição (TESTE) + inversão
+        # 4A) Predição + inversão (TESTE)
         # -------------------------
         if hasattr(model, "predict"):
-            y_pred_scaled = model.predict(X_test_scaled)
+            y_pred_scaled_test = model.predict(X_test_scaled)
         elif hasattr(trainer, "predict"):
-            y_pred_scaled = trainer.predict(model, X_test_scaled)
+            y_pred_scaled_test = trainer.predict(model, X_test_scaled)
         else:
             raise RuntimeError("Seu trainer/modelo precisa de método predict.")
 
         if inverse_kind == "global":
-            y_pred = processor.inverse_transform_global(y_pred_scaled)
+            y_pred_test = processor.inverse_transform_global(y_pred_scaled_test)
             y_test_orig = processor.inverse_transform_global(y_test_scaled)
 
         elif inverse_kind == "local":
-            y_pred = processor.inverse_transform_local(y_pred_scaled, inverse_ctx)
-            y_test_orig = processor.inverse_transform_local(y_test_scaled, inverse_ctx)
+            y_pred_test = processor.inverse_transform_local(y_pred_scaled_test, inverse_ctx_test)
+            y_test_orig = processor.inverse_transform_local(y_test_scaled, inverse_ctx_test)
 
         else:  # "evomsn" e "evomsn_like"
-            msn, ctx_test = inverse_ctx
-            _per_scale, y_pred = msn.denorm_and_ensemble(y_pred_scaled, ctx_test)  # (N,H)
+            msn, ctx_test = inverse_ctx_test
+            _per_scale_test, y_pred_test = msn.denorm_and_ensemble(y_pred_scaled_test, ctx_test)  # (N,H)
             y_test_orig = y_test  # já está no domínio real nesse caminho
 
-        # alinhar shapes e timestamps
-        y_pred, y_test_orig, timestamps, n_steps = self.universal_postprocess(y_pred, y_test_orig, ts_test)
+        # alinhar shapes/timestamps (TESTE)
+        y_pred_test, y_test_orig, timestamps, n_steps = self.universal_postprocess(y_pred_test, y_test_orig, ts_test)
 
         # -------------------------
-        # 5) CSV + Gráficos
+        # 4B) Predição + inversão (TREINO) para métricas
+        # -------------------------
+        if hasattr(model, "predict"):
+            y_pred_scaled_train = model.predict(X_train_scaled)
+        else:
+            y_pred_scaled_train = trainer.predict(model, X_train_scaled)
+
+        if inverse_kind == "global":
+            y_pred_train = processor.inverse_transform_global(y_pred_scaled_train)
+            y_train_orig = processor.inverse_transform_global(y_train_scaled)
+
+        elif inverse_kind == "local":
+            # usa o ctx do TREINO que guardamos na normalização local
+            y_pred_train = processor.inverse_transform_local(y_pred_scaled_train, ctx_train_local)
+            y_train_orig = processor.inverse_transform_local(y_train_scaled, ctx_train_local)
+
+        else:  # "evomsn"/"evomsn_like"
+            # ctx de treino calculado acima (ctx_train_msn)
+            _per_scale_tr, y_pred_train = msn.denorm_and_ensemble(y_pred_scaled_train, ctx_train_msn)
+            y_train_orig = y_train  # já no domínio real
+
+        # alinhar shapes para métricas de treino (timestamps não usados nas métricas):
+        y_pred_train = np.array(y_pred_train)
+        y_train_orig = np.array(y_train_orig)
+        if y_pred_train.ndim == 1:
+            y_pred_train = y_pred_train.reshape(-1, 1)
+        if y_train_orig.ndim == 1:
+            y_train_orig = y_train_orig.reshape(-1, 1)
+        # garantir colunas compatíveis
+        n_steps_train = y_pred_train.shape[1]
+        y_train_orig = y_train_orig[:, :n_steps_train]
+
+        # -------------------------
+        # 4C) Métricas (Train/Test)
+        # -------------------------
+        metrics_train = self._compute_basic_metrics(y_train_orig, y_pred_train)
+        metrics_test  = self._compute_basic_metrics(y_test_orig, y_pred_test)
+
+        metrics_readable = {
+            "MAE - Train data": metrics_train["mae"],
+            "MAE - Test data": metrics_test["mae"],
+            "RMSE - Train data": metrics_train["rmse"],
+            "RMSE - Test data": metrics_test["rmse"],
+            "MSE - Train data": metrics_train["mse"],
+            "MSE - Test data": metrics_test["mse"],
+            "R2 score - Train data": metrics_train["r2"],
+            "R2 score - Test data": metrics_test["r2"],
+        }
+        metrics_bundle = {
+            "train": metrics_train,
+            "test": metrics_test,
+            "readable": metrics_readable,
+            "n_steps": int(n_steps),
+            "window_size": int(window_size),
+            "run_id": hash_id,
+        }
+        with open(metrics_path, "w") as f:
+            json.dump(metrics_bundle, f, indent=4)
+
+        # -------------------------
+        # 5) CSV + Gráficos (TESTE)
         # -------------------------
         csv_exporter = CSVExporter()
         results_df = csv_exporter.save_predictions_to_csv(
-            timestamps=timestamps, y_test=y_test_orig, y_pred=y_pred,
+            timestamps=timestamps, y_test=y_test_orig, y_pred=y_pred_test,
             steps_ahead=n_steps, output_path=csv_path
         )
 
@@ -335,7 +424,7 @@ class ModelService:
             save_path=os.path.join(base_path, "graficos", "price_predictions.png")
         )
         plotter.plot_errors_over_time(
-            y_test=y_test_orig, y_pred=y_pred,
+            y_test=y_test_orig, y_pred=y_pred_test,
             save_path=os.path.join(base_path, "graficos", "errors_over_time.png")
         )
         try:
@@ -347,22 +436,23 @@ class ModelService:
         except Exception:
             pass
         plotter.plot_histogram_of_errors(
-            y_test=y_test_orig, y_pred=y_pred,
+            y_test=y_test_orig, y_pred=y_pred_test,
             save_path=os.path.join(base_path, "graficos", "histogram_errors.png")
         )
         plotter.plot_scatter_real_vs_predicted(
-            y_test=y_test_orig, y_pred=y_pred,
+            y_test=y_test_orig, y_pred=y_pred_test,
             save_path=os.path.join(base_path, "graficos", "scatter_real_vs_predicted.png")
         )
 
         # -------------------------
         # 6) Banco
         # -------------------------
+        metrics_json_db = json.dumps(metrics_bundle, indent=4)
         ensure_db_connection()
         TrainingRun.create(
             run_uuid=hash_id,
-            start_time=config.get("start_date"),
-            end_time=config.get("end_date"),
+            start_time=_parse_dt(config.get("start_date")),
+            end_time=_parse_dt(config.get("end_date")),
             status="finished",
             model_path=model_path,
             csv_metrics_path=csv_path,
@@ -377,6 +467,7 @@ class ModelService:
             val_loss=val_loss,
             best_epoch=get_epochs_trained(model if not hasattr(model, "history") else model.history),
             log=None,
+            metrics_json=metrics_json_db, 
         )
 
         return {
@@ -384,6 +475,8 @@ class ModelService:
             "val_loss": float(val_loss) if val_loss is not None else None,
             "model_path": model_path,
             "csv_path": csv_path,
+            "metrics": metrics_bundle,
+            "metrics_path": metrics_path,
             "run_id": hash_id,
             "results_path": base_path,
         }
@@ -409,6 +502,7 @@ class ModelService:
         scaler_dir = os.path.join(base_path, "scaler")
         config_path = os.path.join(base_path, "hiperparams", f"config_{hash_id}.json")
         plot_dir = os.path.join(base_path, "graficos")
+        metrics_path = os.path.join(base_path, "metrics.json")
 
         config["run_id"] = hash_id
         with open(config_path, "w") as f:
@@ -450,26 +544,31 @@ class ModelService:
         n_tr, n_v = X_train.shape[0], X_val.shape[0]
         tw_train, tw_val, tw_test = tw_all[:n_tr], tw_all[n_tr:n_tr + n_v], tw_all[n_tr + n_v:]
 
+        # normalização
+        ctx_train_local = None
+        ctx_train_msn = None
+
         if norm_strategy == "global":
             X_train_scaled, y_train_scaled = processor.normalize_global(X_train, y_train)
             processor.save_scaler(scaler_dir)
             X_val_scaled,  y_val_scaled  = processor.apply_normalization_global(X_val,  y_val)
             X_test_scaled, y_test_scaled = processor.apply_normalization_global(X_test, y_test)
             inverse_kind = "global"
-            inverse_ctx = None
+            inverse_ctx_test = None
+
         elif norm_strategy == "local":
             target_idx = 0  # aqui não usamos alvo dentro do X no fine-tune por padrão
-            X_train_scaled, y_train_scaled, _ = processor.normalize_local(
+            X_train_scaled, y_train_scaled, ctx_train_local = processor.normalize_local(
                 X_train, y_train, x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
             )
             X_val_scaled, y_val_scaled, _ = processor.apply_normalization_local(
                 X_val, y_val, x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
             )
-            X_test_scaled, y_test_scaled, ctx_test = processor.apply_normalization_local(
+            X_test_scaled, y_test_scaled, inverse_ctx_test = processor.apply_normalization_local(
                 X_test, y_test, x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
             )
             inverse_kind = "local"
-            inverse_ctx = ctx_test
+
         else:
             if norm_strategy == "evomsn":
                 msn = EvoMSNNormalizer(
@@ -480,7 +579,7 @@ class ModelService:
                     k_scales=int(evcfg["k_scales"]),
                     agg=str(evcfg.get("agg", "fft")),
                     random_state=config.get("seed", 42),
-                    predictor_type=str(evcfg.get("predictor", "linear")),  # <- CORREÇÃO #2
+                    predictor_type=str(evcfg.get("predictor", "linear")),
                 )
             else:
                 msn = EvoMSNLikeNormalizer(
@@ -493,10 +592,11 @@ class ModelService:
                     random_state=config.get("seed", 42),
                 )
             X_train_scaled, y_train_scaled = msn.fit(X_train, y_train, save_path=scaler_dir)
-            X_val_scaled,  y_val_scaled,  ctx_val  = msn.transform(X_val,  y_val,  target_windows=tw_val)
+            _Xtr_tmp, _ytr_tmp, ctx_train_msn = msn.transform(X_train, None, target_windows=tw_train)
+            X_val_scaled,  y_val_scaled,  _ctx_val  = msn.transform(X_val,  y_val,  target_windows=tw_val)
             X_test_scaled, _y_dummy,     ctx_test = msn.transform(X_test, None,   target_windows=tw_test)
             inverse_kind = "evomsn"
-            inverse_ctx = (msn, ctx_test)
+            inverse_ctx_test = (msn, ctx_test)
 
         # trainer/modelo
         TrainerClass = TrainerFactory.get_trainer(framework, model_type)
@@ -507,7 +607,7 @@ class ModelService:
         model = trainer.finetune(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, config)
         trainer.save_model(model_ft_path)
 
-        # métricas
+        # métricas (loss)
         train_loss, val_loss = None, None
         if hasattr(model, "history") and hasattr(model.history, "history"):
             train_loss = model.history.history["loss"][-1]
@@ -515,29 +615,78 @@ class ModelService:
         elif hasattr(trainer, "get_last_metrics"):
             train_loss, val_loss = trainer.get_last_metrics()
 
-        # predição teste
+        # predição TESTE + inversão
         if hasattr(model, "predict"):
-            y_pred_scaled = model.predict(X_test_scaled)
+            y_pred_scaled_test = model.predict(X_test_scaled)
         else:
-            y_pred_scaled = trainer.predict(model, X_test_scaled)
+            y_pred_scaled_test = trainer.predict(model, X_test_scaled)
 
         if inverse_kind == "global":
-            y_pred = processor.inverse_transform_global(y_pred_scaled)
+            y_pred_test = processor.inverse_transform_global(y_pred_scaled_test)
             y_test_orig = processor.inverse_transform_global(y_test_scaled)
         elif inverse_kind == "local":
-            y_pred = processor.inverse_transform_local(y_pred_scaled, inverse_ctx)
-            y_test_orig = processor.inverse_transform_local(y_test_scaled, inverse_ctx)
+            y_pred_test = processor.inverse_transform_local(y_pred_scaled_test, inverse_ctx_test)
+            y_test_orig = processor.inverse_transform_local(y_test_scaled, inverse_ctx_test)
         else:
-            msn, ctx_test = inverse_ctx
-            _per_scale, y_pred = msn.denorm_and_ensemble(y_pred_scaled, ctx_test)
+            msn, ctx_test = inverse_ctx_test
+            _per_scale_te, y_pred_test = msn.denorm_and_ensemble(y_pred_scaled_test, ctx_test)
             y_test_orig = y_test
 
-        y_pred, y_test_orig, timestamps, n_steps = self.universal_postprocess(y_pred, y_test_orig, ts_test)
+        y_pred_test, y_test_orig, timestamps, n_steps = self.universal_postprocess(y_pred_test, y_test_orig, ts_test)
 
-        # artefatos
+        # predição TREINO + inversão (para métricas)
+        if hasattr(model, "predict"):
+            y_pred_scaled_train = model.predict(X_train_scaled)
+        else:
+            y_pred_scaled_train = trainer.predict(model, X_train_scaled)
+
+        if inverse_kind == "global":
+            y_pred_train = processor.inverse_transform_global(y_pred_scaled_train)
+            y_train_orig = processor.inverse_transform_global(y_train_scaled)
+        elif inverse_kind == "local":
+            y_pred_train = processor.inverse_transform_local(y_pred_scaled_train, ctx_train_local)
+            y_train_orig = processor.inverse_transform_local(y_train_scaled, ctx_train_local)
+        else:
+            _per_scale_tr, y_pred_train = msn.denorm_and_ensemble(y_pred_scaled_train, ctx_train_msn)
+            y_train_orig = y_train
+
+        # alinhar shapes para métricas de treino
+        y_pred_train = np.array(y_pred_train)
+        y_train_orig = np.array(y_train_orig)
+        if y_pred_train.ndim == 1:
+            y_pred_train = y_pred_train.reshape(-1, 1)
+        if y_train_orig.ndim == 1:
+            y_train_orig = y_train_orig.reshape(-1, 1)
+        y_train_orig = y_train_orig[:, :y_pred_train.shape[1]]
+
+        # métricas (Train/Test)
+        metrics_train = self._compute_basic_metrics(y_train_orig, y_pred_train)
+        metrics_test  = self._compute_basic_metrics(y_test_orig, y_pred_test)
+        metrics_readable = {
+            "MAE - Train data": metrics_train["mae"],
+            "MAE - Test data": metrics_test["mae"],
+            "RMSE - Train data": metrics_train["rmse"],
+            "RMSE - Test data": metrics_test["rmse"],
+            "MSE - Train data": metrics_train["mse"],
+            "MSE - Test data": metrics_test["mse"],
+            "R2 score - Train data": metrics_train["r2"],
+            "R2 score - Test data": metrics_test["r2"],
+        }
+        metrics_bundle = {
+            "train": metrics_train,
+            "test": metrics_test,
+            "readable": metrics_readable,
+            "n_steps": int(n_steps),
+            "window_size": int(window_size),
+            "run_id": hash_id,
+        }
+        with open(metrics_path, "w") as f:
+            json.dump(metrics_bundle, f, indent=4)
+
+        # artefatos (TESTE)
         csv_exporter = CSVExporter()
         results_df = csv_exporter.save_predictions_to_csv(
-            timestamps=timestamps, y_test=y_test_orig, y_pred=y_pred,
+            timestamps=timestamps, y_test=y_test_orig, y_pred=y_pred_test,
             steps_ahead=n_steps, output_path=csv_path
         )
 
@@ -550,7 +699,7 @@ class ModelService:
             save_path=os.path.join(plot_dir, "price_predictions.png")
         )
         plotter.plot_errors_over_time(
-            y_test=y_test_orig, y_pred=y_pred,
+            y_test=y_test_orig, y_pred=y_pred_test,
             save_path=os.path.join(plot_dir, "errors_over_time.png")
         )
         try:
@@ -561,12 +710,11 @@ class ModelService:
         except Exception:
             pass
         plotter.plot_histogram_of_errors(
-            y_test=y_test_orig, y_pred=y_pred,
+            y_test=y_test_orig, y_pred=y_pred_test,
             save_path=os.path.join(plot_dir, "histogram_errors.png")
         )
-        # CORREÇÃO #3: remover "graficos" duplicado
         plotter.plot_scatter_real_vs_predicted(
-            y_test=y_test_orig, y_pred=y_pred,
+            y_test=y_test_orig, y_pred=y_pred_test,
             save_path=os.path.join(plot_dir, "scatter_real_vs_predicted.png")
         )
 
@@ -609,10 +757,11 @@ class ModelService:
             "val_loss": float(val_loss) if val_loss is not None else None,
             "model_path": model_ft_path,
             "csv_path": csv_path,
+            "metrics": metrics_bundle,
+            "metrics_path": metrics_path,
             "run_id": hash_id,
             "results_path": base_path,
             "fine_tune_run_id": fine_tune_run.id,
-            "metrics": metrics_dict,
         }
 
     # -------------------------
@@ -688,7 +837,7 @@ class ModelService:
             y_pred_scaled = model.predict(Xn) if hasattr(model, "predict") else trainer.predict(model, Xn)
             y_pred = processor.inverse_transform_local(y_pred_scaled, ctx)
 
-        else:  # "evomsn" ou "evomsn_like"  (CORREÇÃO #1)
+        else:  # "evomsn" ou "evomsn_like"
             Normalizer = EvoMSNNormalizer if norm_strategy == "evomsn" else EvoMSNLikeNormalizer
             # carrega meta salva no treino
             meta = Normalizer.load_meta(scaler_dir)
