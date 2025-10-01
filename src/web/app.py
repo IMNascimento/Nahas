@@ -30,6 +30,73 @@ indicator_options = [
     {"label": "EMA", "key": "ema", "param_label": "Período", "default": 14},
 ]
 
+# =========================
+# Helpers p/ Grid Unificado
+# =========================
+
+def _cast_atom(s):
+    """Tenta converter para bool/int/float; mantém 'RANDOM' como string; caso contrário devolve string."""
+    if isinstance(s, (int, float, bool)):
+        return s
+    if not isinstance(s, str):
+        return s
+    v = s.strip()
+    if v.lower() == "true":  return True
+    if v.lower() == "false": return False
+    if v.upper() == "RANDOM": return "RANDOM"
+    try:
+        return int(v)
+    except:
+        pass
+    try:
+        return float(v)
+    except:
+        pass
+    return v
+
+def _parse_sweep_csv(text: str):
+    """
+    "72,96" -> [72,96]; "Adam,SGD" -> ["Adam","SGD"]; vazio -> [].
+    """
+    if text is None:
+        return []
+    s = str(text).strip()
+    if not s:
+        return []
+    parts = [p.strip() for p in s.split(",")]
+    parts = [p for p in parts if p != ""]
+    return [_cast_atom(p) for p in parts]
+
+def _json_download_bytes(pyobj) -> bytes:
+    return json.dumps(pyobj, indent=2).encode("utf-8")
+
+def _detect_gpus():
+    """
+    Retorna lista de rótulos de GPU, e.g. ["0 - NVIDIA A100", "1 - NVIDIA A100"].
+    Tenta PyTorch, depois TensorFlow. Se nada achar, [].
+    """
+    gpus = []
+    # PyTorch
+    try:
+        import torch
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                name = torch.cuda.get_device_name(i)
+                gpus.append(f"{i} - {name}")
+    except Exception:
+        pass
+    # TensorFlow
+    if not gpus:
+        try:
+            import tensorflow as tf
+            phys = tf.config.list_physical_devices("GPU")
+            for i, dev in enumerate(phys):
+                # dev.name costuma vir como '/physical_device:GPU:0'
+                gpus.append(f"{i} - {getattr(dev, 'name', str(dev))}")
+        except Exception:
+            pass
+    return gpus
+
 # -----------------------------
 # Helpers (UI)
 # -----------------------------
@@ -175,87 +242,16 @@ with st.sidebar:
     st.markdown("- [Contato/Suporte](mailto:contato@sophialabs.com.br)")
 
 tabs = st.tabs([
-    "Grid Search",
     "Treino Normal",
+    "Grid Search",
     "Fine-tuning",
     "Live Run"
 ])
 
 # ---------------------------------
-# 1. GRID SEARCH
+# 1. TREINO NORMAL
 # ---------------------------------
 with tabs[0]:
-    st.header("Grid Search de Hiperparâmetros")
-    st.info("Monte seu grid de hiperparâmetros para múltiplos experimentos.")
-    frameworks = ["keras", "pytorch", "tensorflow"]
-    model_types = ["lstm", "transformer"]
-    with st.form("grid_search_form"):
-        st.subheader("Geral")
-        framework = st.selectbox("Framework", frameworks)
-        model_type = st.selectbox("Modelo", model_types)
-        st.markdown("#### Hiperparâmetros para o Grid")
-        window_sizes = st.text_input("Window Sizes (ex: 72,96,120)", value="72,96,120")
-        batch_sizes = st.text_input("Batch Sizes (ex: 16,32,64)", value="16,32,64")
-        epochs = st.text_input("Epochs (ex: 100,200)", value="100")
-        patience = st.text_input("Patience (ex: 5,10)", value="5,10")
-        learning_rates = st.text_input("Learning Rates (ex: 0.001,0.0005)", value="0.001,0.0005")
-        dropout_rates = st.text_input("Dropout Rates (ex: 0.2,0.3,0.5)", value="0.2,0.3,0.5")
-        optimizer = st.multiselect("Optimizer", options=["Adam", "RMSprop", "SGD"], default=["Adam"])
-        loss_functions = st.multiselect("Função de Perda", options=["mean_squared_error", "mean_absolute_error", "mse"], default=["mean_squared_error"])
-
-        if model_type == "lstm":
-            layers_config = st.text_input("Layers Config (ex: [128,64],[64,64])", value="[128,64],[64,64]")
-            bidirectional = st.multiselect("Bidirecional", options=[True, False], default=[False])
-            l1 = st.text_input("L1 Regularization", value="0.0,0.001")
-            l2 = st.text_input("L2 Regularization", value="0.0,0.001")
-            activation = st.text_input("Função de Ativação (ex: tanh,relu)", value="tanh")
-        else:  # transformer
-            num_layers = st.text_input("Num Layers", value="2,3")
-            embed_dim = st.text_input("Embed Dim", value="32,64")
-            num_heads = st.text_input("Num Heads", value="2,4")
-            ff_dim = st.text_input("FF Dim", value="64,128")
-            activation = st.text_input("Função de Ativação (ex: relu,g elu)", value="relu")
-            l1 = st.text_input("L1 Regularization", value="0.0,0.001")
-            l2 = st.text_input("L2 Regularization", value="0.0,0.001")
-
-        submit_btn = st.form_submit_button("Salvar Configuração de Grid")
-        if submit_btn:
-            hyperparams = {
-                "FRAMEWORK": [framework],
-                "MODEL_TYPE": [model_type],
-                "WINDOW_SIZE": [int(x) for x in window_sizes.split(",") if x],
-                "BATCH_SIZE": [int(x) for x in batch_sizes.split(",") if x],
-                "EPOCHS": [int(x) for x in epochs.split(",") if x],
-                "PATIENCE": [int(x) for x in patience.split(",") if x],
-                "LEARNING_RATE": [float(x) for x in learning_rates.split(",") if x],
-                "DROPOUT": [float(x) for x in dropout_rates.split(",") if x],
-                "OPTIMIZER": optimizer,
-                "LOSS_FUNCTION": loss_functions,
-            }
-            if model_type == "lstm":
-                hyperparams["LAYERS_CONFIG"] = [json.loads(x + "]") if not x.strip().endswith("]") else json.loads(x) for x in layers_config.replace("],[", "]|[").split("|")]
-                hyperparams["BIDIRECTIONAL"] = bidirectional
-                hyperparams["L1_REGULARIZATION"] = [float(x) for x in l1.split(",") if x]
-                hyperparams["L2_REGULARIZATION"] = [float(x) for x in l2.split(",") if x]
-                hyperparams["ACTIVATION_FUNCTION"] = [x.strip() for x in activation.split(",")]
-            else:
-                hyperparams["NUM_LAYERS"] = [int(x) for x in num_layers.split(",") if x]
-                hyperparams["EMBED_DIM"] = [int(x) for x in embed_dim.split(",") if x]
-                hyperparams["NUM_HEADS"] = [int(x) for x in num_heads.split(",") if x]
-                hyperparams["FF_DIM"] = [int(x) for x in ff_dim.split(",") if x]
-                hyperparams["L1_REGULARIZATION"] = [float(x) for x in l1.split(",") if x]
-                hyperparams["L2_REGULARIZATION"] = [float(x) for x in l2.split(",") if x]
-                hyperparams["ACTIVATION"] = [x.strip() for x in activation.split(",")]
-            unique_id = str(uuid.uuid4())[:8]
-            st.success(f"Configuração de grid salva! ID: {unique_id}")
-            st.download_button("Download Grid Config JSON", data=json.dumps(hyperparams, indent=4), file_name=f"grid_config_{unique_id}.json")
-
-    st.markdown("### Configurações de Grid Salvas:")
-
-# ---------------------------------
-# 2. TREINO NORMAL
-# ---------------------------------
-with tabs[1]:
     st.header("Treinamento de Modelo Único")
     st.info("Defina e treine um modelo único com os hiperparâmetros desejados.")
 
@@ -393,6 +389,325 @@ with tabs[1]:
                 result = service.train(config, framework, model_type)
             st.success(f"Modelo treinado! Caminho: {result['model_path']}")
             st.code(json.dumps(result, indent=2))
+
+# ---------------------------------
+# 2. GRID SEARCH
+# ---------------------------------
+with tabs[1]:
+    st.header("Grid Search (qualquer campo pode ser fixo ou varrido)")
+    st.caption("Use **JSON unificado** (um arquivo só) ou monte tudo pela interface.")
+
+    # ==== Exemplo unificado p/ download ====
+    ex_unified = service.example_unified_grid_json()
+    st.download_button(
+        "📥 Baixar exemplo (JSON unificado)",
+        data=_json_download_bytes(ex_unified),
+        file_name="grid_unificado_exemplo.json",
+        mime="application/json",
+        use_container_width=True
+    )
+
+    st.divider()
+
+    modo = st.radio(
+        "Como você quer configurar?",
+        options=["JSON unificado (upload)", "Configurar via interface"],
+        horizontal=True
+    )
+
+    score = st.selectbox("Métrica de ranking", ["rmse", "mae", "mse", "r2"], index=0)
+    score_on = st.selectbox("Avaliar métrica em", ["test", "train"], index=0)
+
+    # ======================================================
+    # MODO 1: Upload de JSON UNIFICADO
+    # ======================================================
+    if modo == "JSON unificado (upload)":
+        st.subheader("Upload de JSON Unificado")
+        up = st.file_uploader("Envie o arquivo .json com a configuração unificada", type=["json"], key="unified_json")
+        unified_cfg = None
+        if up is not None:
+            try:
+                unified_cfg = json.load(up)
+                st.success("JSON carregado com sucesso. Prévia abaixo:")
+                st.json(unified_cfg)
+            except Exception as e:
+                st.error(f"Falha ao ler JSON: {e}")
+
+        if st.button("🚀 Executar Grid (JSON unificado)", type="primary", use_container_width=True):
+            if not unified_cfg:
+                st.error("Envie um JSON unificado válido.")
+            else:
+                with st.spinner("Executando Grid Search (unificado)..."):
+                    res = service.grid_search_unified(unified_cfg, score=score, score_on=score_on)
+                st.success(f"Grid finalizado! ID: {res['grid_id']}")
+                st.write("🏆 Melhor configuração:")
+                st.json(res["best"])
+                st.write("📁 Arquivos gerados:")
+                st.code(f"- Leaderboard: {res['leaderboard_csv']}\n- Resumo: {res['summary_json']}")
+
+    # ======================================================
+    # MODO 2: UI para montar JSON UNIFICADO
+    # ======================================================
+    if modo == "Configurar via interface":
+        st.subheader("Montar Config Unificada pela UI")
+
+        with st.expander("Identificação e Modelo", expanded=True):
+            grid_id_ui = st.text_input("grid_id (opcional)", value="grid_ui")
+            fw_list = st.multiselect("Framework(s)", frameworks, default=["keras"])
+            mt_list = st.multiselect("Model type(s)", model_types, default=["lstm"])
+
+        with st.expander("Janela temporal & Split", expanded=True):
+            sd = st.text_input("START_DATE (YYYY-MM-DD HH:MM:SS) — pode listar separado por vírgula", "2017-08-18 00:00:00")
+            ed = st.text_input("END_DATE (YYYY-MM-DD HH:MM:SS)", "2025-01-19 23:59:59")
+            train_list = _parse_sweep_csv(st.text_input("TRAIN_SIZE (ex: 0.7 ou 0.6,0.7)", "0.7"))
+            val_list   = _parse_sweep_csv(st.text_input("VALIDATION_SPLIT (ex: 0.15 ou 0.1,0.2)", "0.15"))
+            steps_list = _parse_sweep_csv(st.text_input("STEPS_AHEAD (ex: 1 ou 1,3,5)", "1"))
+
+        # =========================
+        # Features / Alvo  (NÃO aninhar nada aqui dentro)
+        # =========================
+        with st.expander("Features / Alvo", expanded=True):
+            fin_cols = ["close", "open", "high", "low", "volume"]
+
+            # Conjuntos de features (A e opcional B)
+            setA = st.multiselect("Feature set A", fin_cols, default=fin_cols, key="feat_setA")
+
+            setB_enable = st.checkbox("Adicionar Feature set B?", value=False, key="feat_setB_enable")
+            setB = st.multiselect("Feature set B", fin_cols, default=["close", "volume"], key="feat_setB") if setB_enable else None
+
+            # Target pode ser lista (para varrer)
+            target_list = _parse_sweep_csv(
+                st.text_input("TARGET_COLUMN (pode listar múltiplos separados por vírgula)", "close", key="target_csv")
+            )
+
+        # =========================
+        # Indicadores técnicos (opcional)  (EXPANDER IRMÃO)
+        # =========================
+        with st.expander("Indicadores técnicos (opcional)", expanded=False):
+            ind_cfg = {}  # se ficar vazio => sem indicadores
+
+            col_i1, col_i2 = st.columns(2)
+            with col_i1:
+                use_sma = st.checkbox("Usar SMA", key="use_sma")
+                if use_sma:
+                    sma_period = st.number_input("SMA - Período", min_value=1, value=14, step=1, key="sma_period")
+                    ind_cfg["sma"] = [{"period": int(sma_period), "col_name": f"sma_{int(sma_period)}"}]
+
+                use_rsi = st.checkbox("Usar RSI", key="use_rsi")
+                if use_rsi:
+                    rsi_period = st.number_input("RSI - Período", min_value=2, value=14, step=1, key="rsi_period")
+                    ind_cfg["rsi"] = [{"period": int(rsi_period), "col_name": f"rsi_{int(rsi_period)}"}]
+
+            with col_i2:
+                use_ema = st.checkbox("Usar EMA", key="use_ema")
+                if use_ema:
+                    ema_period = st.number_input("EMA - Período", min_value=1, value=14, step=1, key="ema_period")
+                    ind_cfg["ema"] = [{"period": int(ema_period), "col_name": f"ema_{int(ema_period)}"}]
+
+                use_macd = st.checkbox("Usar MACD", key="use_macd")
+                if use_macd:
+                    fast = st.number_input("MACD - Fast", min_value=1, value=12, step=1, key="macd_fast")
+                    slow = st.number_input("MACD - Slow", min_value=2, value=26, step=1, key="macd_slow")
+                    sig  = st.number_input("MACD - Signal", min_value=1, value=9, step=1, key="macd_signal")
+                    ind_cfg["macd"] = [{
+                        "fast": int(fast), "slow": int(slow), "signal": int(sig),
+                        "col_name_macd": f"macd_{int(fast)}_{int(slow)}",
+                        "col_name_signal": f"macd_signal_{int(sig)}",
+                        "col_name_hist": f"macd_hist_{int(fast)}_{int(slow)}_{int(sig)}"
+                    }]
+
+            st.caption("Se nenhum indicador for marcado, será considerado **sem indicadores**.")
+
+            # Varredura com/sem indicadores no grid unificado
+            varrer_inds = st.checkbox("Varrer com/sem indicadores no Grid?", value=False, key="inds_sweep_toggle")
+            indicators_sweep = ([{}, ind_cfg] if ind_cfg else [{}]) if varrer_inds else (ind_cfg if ind_cfg else {})
+
+        # =========================
+        # Normalização (varrer estratégias diferentes)  (EXPANDER IRMÃO)
+        # =========================
+        with st.expander("Normalização (varrer estratégias diferentes)", expanded=True):
+            norm_opts = st.multiselect(
+                "Escolha estratégias para varrer",
+                ["global", "local", "evomsn", "evomsn_like"],
+                default=["global","local","evomsn"]
+            )
+            norm_list = []
+            if "global" in norm_opts:
+                scaler = st.selectbox("Global: scaler_type", ["robust","standard","minmax"], index=0, key="norm_global_scaler")
+                norm_list.append({"strategy": "global", "scaler_type": scaler})
+            if "local" in norm_opts:
+                c1, c2 = st.columns(2)
+                with c1:
+                    xmode = st.selectbox("Local: x_mode", ["zscore","minmax","robust"], index=0, key="norm_local_x")
+                with c2:
+                    ymode = st.selectbox("Local: y_mode", ["none","relative_last","zscore_target","minmax_target","robust_target"], index=0, key="norm_local_y")
+                norm_list.append({"strategy": "local", "x_mode": xmode, "y_mode": ymode})
+            if "evomsn" in norm_opts:
+                c1, c2 = st.columns(2)
+                with c1:
+                    k_scales = st.number_input("EvoMSN: k_scales", min_value=1, max_value=8, value=4, step=1, key="norm_ev_k")
+                with c2:
+                    predictor = st.selectbox("EvoMSN: predictor", ["linear","mlp"], index=0, key="norm_ev_pred")
+                norm_list.append({"strategy": "evomsn", "evomsn_k_scales": int(k_scales), "evomsn_predictor": predictor})
+            if "evomsn_like" in norm_opts:
+                alpha = st.number_input("EvoMSN-like: alpha", min_value=0.0, max_value=1.0, value=0.1, step=0.01, key="norm_like_alpha")
+                beta  = st.number_input("EvoMSN-like: beta",  min_value=0.0, max_value=1.0, value=0.1, step=0.01, key="norm_like_beta")
+                eps   = st.number_input("EvoMSN-like: eps",   value=1e-8, format="%.1e", key="norm_like_eps")
+                noise = st.number_input("EvoMSN-like: noise std", min_value=0.0, value=0.0, step=0.01, key="norm_like_noise")
+                norm_list.append({
+                    "strategy": "evomsn_like",
+                    "evomsn_like_alpha": float(alpha),
+                    "evomsn_like_beta": float(beta),
+                    "evomsn_like_eps": float(eps),
+                    "evomsn_like_noise_std": float(noise),
+                })
+        
+        with st.expander("Execução paralela (GPU/CPU) – opcional", expanded=False):
+            parallel_enabled = st.checkbox("Ativar execução paralela com controle de capacidade", value=False, key="par_enabled")
+            backend = st.selectbox("Backend", ["process"], index=0, key="par_backend", help="Use 'process' (recomendado).")
+            max_workers_per_gpu = st.number_input("Máx. jobs simultâneos por GPU", min_value=1, value=2, step=1, key="par_mwpg")
+            safety_ratio = st.number_input("Margem de segurança de memória (ex.: 0.20 = 20%)", min_value=0.0, max_value=0.9, value=0.20, step=0.05, key="par_safety")
+            cpu_workers = st.number_input("Máx. jobs simultâneos na CPU", min_value=0, value=2, step=1, key="par_cpu")
+
+        with st.expander("Device & Seed", expanded=False):
+            use_gpu_ui = st.checkbox("USE_GPU", value=False, key="grid_use_gpu")
+
+            selected_gpus = []
+            if use_gpu_ui:
+                gpu_list = _detect_gpus()
+                if not gpu_list:
+                    st.warning("Nenhuma GPU detectada neste ambiente.")
+                else:
+                    st.write("Selecione as GPUs que deseja usar:")
+                    # se houver só 1 GPU, pré-seleciona
+                    default_sel = gpu_list if len(gpu_list) == 1 else st.session_state.get("grid_selected_gpus", [])
+                    current_sel = []
+                    for label in gpu_list:
+                        checked = st.checkbox(label, value=(label in default_sel), key=f"grid_gpu_{label}")
+                        if checked:
+                            current_sel.append(label)
+                    selected_gpus = current_sel
+                    st.session_state["grid_selected_gpus"] = selected_gpus
+
+            seed_csv = st.text_input('SEED (ex: "RANDOM" ou 42,123)', value="RANDOM", key="grid_seed_csv")
+            seed_list = _parse_sweep_csv(seed_csv) if seed_csv.strip() else []
+
+        with st.expander("Hiperparâmetros (coloque listas para varrer)", expanded=True):
+            w_sizes = _parse_sweep_csv(st.text_input("WINDOW_SIZE", "72,96"))
+            batches = _parse_sweep_csv(st.text_input("BATCH_SIZE", "16,32"))
+            epochs  = _parse_sweep_csv(st.text_input("EPOCHS", "50"))
+            pat     = _parse_sweep_csv(st.text_input("PATIENCE", "5,10"))
+            lrs     = _parse_sweep_csv(st.text_input("LEARNING_RATE", "0.001,0.0005"))
+            drps    = _parse_sweep_csv(st.text_input("DROPOUT", "0.2,0.3"))
+            optims  = _parse_sweep_csv(st.text_input("OPTIMIZER", "Adam"))
+            losses  = _parse_sweep_csv(st.text_input("LOSS_FUNCTION", "mean_squared_error"))
+
+            lstm_sets, bidirs, act_sets, rec_dp = [], [], [], []
+            if "lstm" in mt_list:
+                lstm_layers = st.text_input('LAYERS_CONFIG (ex: "128,64" ou várias: "128,64 | 64,64")', "128,64 | 64,64")
+                for chunk in [c.strip() for c in lstm_layers.split("|") if c.strip()]:
+                    lstm_sets.append([int(x) for x in chunk.split(",") if x.strip()])
+                bidirs = _parse_sweep_csv(st.text_input("BIDIRECTIONAL (true,false)", "false,true"))
+                acts   = st.text_input('ACTIVATION_FUNCTION (por camada; use "|" p/ múltiplos sets)', "tanh,tanh | relu, relu")
+                for chunk in [c.strip() for c in acts.split("|") if c.strip()]:
+                    act_sets.append([x.strip() for x in chunk.split(",") if x.strip()])
+                rec_dp = _parse_sweep_csv(st.text_input("RECURRENT_DROPOUT", "0.0"))
+
+            n_layers, embedd, heads, ff_dim, act_tr = [], [], [], [], []
+            if "transformer" in mt_list:
+                n_layers = _parse_sweep_csv(st.text_input("NUM_LAYERS", "2,3"))
+                embedd   = _parse_sweep_csv(st.text_input("EMBED_DIM", "32"))
+                heads    = _parse_sweep_csv(st.text_input("NUM_HEADS", "2,4"))
+                ff_dim   = _parse_sweep_csv(st.text_input("FF_DIM", "64,128"))
+                act_tr   = _parse_sweep_csv(st.text_input("ACTIVATION", "relu"))
+
+        # ----- Monta o JSON unificado -----
+        unified_cfg = {
+            "grid_id": grid_id_ui,
+            "framework": fw_list,
+            "model_type": mt_list,
+            "START_DATE": [s.strip() for s in sd.split(",") if s.strip()],
+            "END_DATE":   [s.strip() for s in ed.split(",") if s.strip()],
+            "TRAIN_SIZE": train_list if train_list else [0.7],
+            "VALIDATION_SPLIT": val_list if val_list else [0.15],
+            "STEPS_AHEAD": steps_list if steps_list else [1],
+            "TARGET_COLUMN": target_list if target_list else ["close"],
+            "RELEVANT_COLUMNS": [setA] + ([setB] if setB else []),
+            "INDICATORS_APPLY": indicators_sweep,  # dict (fixo) ou lista de dicts
+            "NORMALIZATION": norm_list,
+            "USE_GPU": [bool(use_gpu_ui and selected_gpus)],  # verdadeiro só se marcou e selecionou algo
+            "GPU_INDEX": (selected_gpus if (use_gpu_ui and selected_gpus) else [None]),
+            "SEED": seed_list if seed_list else ["RANDOM"],
+            "WINDOW_SIZE": w_sizes if w_sizes else [96],
+            "BATCH_SIZE": batches if batches else [32],
+            "EPOCHS": epochs if epochs else [50],
+            "PATIENCE": pat if pat else [5],
+            "LEARNING_RATE": lrs if lrs else [0.001],
+            "DROPOUT": drps if drps else [0.2],
+            "OPTIMIZER": optims if optims else ["Adam"],
+            "LOSS_FUNCTION": losses if losses else ["mean_squared_error"],
+        }
+        if "lstm" in mt_list:
+            unified_cfg["LAYERS_CONFIG"] = lstm_sets if lstm_sets else [[128,64]]
+            unified_cfg["BIDIRECTIONAL"] = bidirs if bidirs else [False]
+            unified_cfg["ACTIVATION_FUNCTION"] = act_sets if act_sets else [["tanh","tanh"]]
+            unified_cfg["RECURRENT_DROPOUT"] = rec_dp if rec_dp else [0.0]
+        if "transformer" in mt_list:
+            unified_cfg["NUM_LAYERS"] = n_layers if n_layers else [2]
+            unified_cfg["EMBED_DIM"]  = embedd if embedd else [32]
+            unified_cfg["NUM_HEADS"]  = heads if heads else [2]
+            unified_cfg["FF_DIM"]     = ff_dim if ff_dim else [64]
+            unified_cfg["ACTIVATION"] = act_tr if act_tr else ["relu"]
+        
+        if parallel_enabled:
+            unified_cfg["PARALLEL"] = {
+                "enabled": bool(parallel_enabled),
+                "backend": backend,
+                "max_workers_per_gpu": int(max_workers_per_gpu),
+                "safety_ratio": float(safety_ratio),
+                "cpu_workers": int(cpu_workers),
+            }
+
+        st.markdown("Prévia do JSON unificado que será usado:")
+        st.code(json.dumps(unified_cfg, indent=2), language="json")
+        st.download_button(
+            "💾 Baixar este JSON montado",
+            data=_json_download_bytes(unified_cfg),
+            file_name="grid_unificado_montado.json",
+            mime="application/json",
+            use_container_width=True
+        )
+
+        if st.button("🚀 Executar Grid (UI → unificado)", type="primary", use_container_width=True):
+            if not fw_list or not mt_list:
+                st.error("Selecione ao menos 1 framework e 1 model_type.")
+            else:
+                with st.spinner("Executando Grid Search (unificado)..."):
+                    res = service.grid_search_unified(unified_cfg, score=score, score_on=score_on)
+                st.success(f"Grid finalizado! ID: {res['grid_id']}")
+                st.write("🏆 Melhor configuração:")
+
+                def _to_jsonable(x):
+                    import numpy as np
+                    if isinstance(x, dict):
+                        return {k: _to_jsonable(v) for k, v in x.items()}
+                    if isinstance(x, (list, tuple)):
+                        return [_to_jsonable(v) for v in x]
+                    if isinstance(x, np.generic):  # np.int64, np.float64 etc.
+                        return x.item()
+                    return x
+
+                best_obj = res.get("best")
+                if best_obj:
+                    st.json(_to_jsonable(best_obj))
+                else:
+                    st.warning("Nenhuma execução válida retornou métricas. Veja o leaderboard para detalhes de erros.")
+
+                st.write("📁 Arquivos gerados:")
+                st.code(f"- Leaderboard: {res['leaderboard_csv']}\n- Resumo: {res['summary_json']}")
+
+
+
 
 # ---------------------------------
 # 3. FINE-TUNING
@@ -548,6 +863,13 @@ with tabs[3]:
         st.write(f"Treinado em: {selected_model.get('created_at', '')}")
         symbol = st.text_input("Símbolo (ex: BTCUSDT)", value="BTCUSDT")
         interval = st.selectbox("Intervalo", ["1h", "4h", "1d"], index=0)
+       
+        if selected_model["framework"].lower() in ("keras", "tensorflow"):
+            try:
+                import keras
+                keras.config.enable_unsafe_deserialization()
+            except Exception:
+                pass
 
         slot = st.empty()
         live_slot = st.empty()
