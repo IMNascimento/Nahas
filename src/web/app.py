@@ -1,4 +1,3 @@
-# app.py
 import sys
 import os
 import threading
@@ -21,6 +20,14 @@ if db.is_closed():
 service = ModelService()
 live_run_stop_flag = threading.Event()
 
+# ---------------------------------
+# CONSTANTES PARA OPÇÕES DE DADOS
+# ---------------------------------
+AVAILABLE_SYMBOLS = ["BTCUSDT", "BTCBRL", "ETHUSDT", "ETHBRL"]
+AVAILABLE_CURRENCIES = ["USDT", "BRL"]
+AVAILABLE_EXCHANGES = ["PUBLIC", "BINANCE"]
+AVAILABLE_SOURCES = ["binance", "kaggle"]
+AVAILABLE_INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"]
 # -- Parâmetros para opções
 frameworks = ["keras", "pytorch", "tensorflow"]
 model_types = ["lstm", "transformer"]
@@ -260,6 +267,61 @@ with tabs[0]:
     model_type = st.selectbox("Modelo", model_types, key="model_type_train")
     use_gpu, gpu_index, gpu_label = gpu_selector(framework, key_prefix="train")
 
+    with st.expander("💾 Fonte e Características dos Dados", expanded=True):
+        st.markdown("**Defina qual ativo e período você deseja usar para treinar o modelo**")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            symbol = st.selectbox(
+                "Symbol (Símbolo do Ativo)", 
+                options=AVAILABLE_SYMBOLS,
+                index=0,  # default: BTCUSDT
+                key="train_symbol",
+                help="Escolha o par de negociação"
+            )
+        with col2:
+            interval = st.selectbox(
+                "Interval (Intervalo Temporal)",
+                options=AVAILABLE_INTERVALS,
+                index=3,  # default: 1h
+                key="train_interval",
+                help="Intervalo dos candles"
+            )
+        with col3:
+            currency = st.selectbox(
+                "Currency (Moeda de Cotação)",
+                options=AVAILABLE_CURRENCIES,
+                index=0,  # default: USDT
+                key="train_currency",
+                help="Moeda de cotação do ativo"
+            )
+        
+        col4, col5 = st.columns(2)
+        with col4:
+            exchange = st.selectbox(
+                "Exchange",
+                options=["Todas"] + AVAILABLE_EXCHANGES,  # Opção "Todas" = None
+                index=0,  # default: Todas
+                key="train_exchange",
+                help="Exchange de origem dos dados"
+            )
+        with col5:
+            source = st.selectbox(
+                "Source (Fonte dos Dados)",
+                options=["Todas"] + AVAILABLE_SOURCES,
+                index=0,  # default: Todas
+                key="train_source",
+                help="Fonte dos dados históricos"
+            )
+        
+        exchange_value = None if exchange == "Todas" else exchange
+        source_value = None if source == "Todas" else source
+        
+        st.caption(
+            f"🔍 Modelo será identificado como: **{symbol}_{interval}_{currency}**"
+            f"{f'_{exchange.upper()[:3]}' if exchange else ''}"
+        )
+
     st.subheader("Colunas Financeiras e alvos (target)")
     indicator_columns = []
     indicators_apply = {}
@@ -359,7 +421,16 @@ with tabs[0]:
                 "run_id": str(uuid.uuid4())[:8],
                 # usa a NORMALIZAÇÃO escolhidinha fora do form
                 "normalization": norm_cfg,
+                "symbol": symbol,
+                "interval": interval,
+                "currency": currency,
             }
+
+            if exchange_value:
+                config["exchange"] = exchange_value
+            if source_value:
+                config["source"] = source_value
+
             if model_type == "lstm":
                 config["layers_config"] = [int(x) for x in layers.split(",") if x.strip()]
                 config["bidirectional"] = bool(bidirectional)
@@ -455,6 +526,60 @@ with tabs[1]:
             grid_id_ui = st.text_input("grid_id (opcional)", value="grid_ui")
             fw_list = st.multiselect("Framework(s)", frameworks, default=["keras"])
             mt_list = st.multiselect("Model type(s)", model_types, default=["lstm"])
+        
+        with st.expander("💾 Dados do Ativo (Symbol, Interval, Currency)", expanded=True):
+            st.markdown("**Defina os ativos e períodos para varrer no Grid Search**")
+            
+            symbol_list = st.multiselect(
+                "SYMBOL (selecione um ou mais)",
+                options=AVAILABLE_SYMBOLS,
+                default=["BTCUSDT"],
+                key="grid_symbol",
+                help="Escolha os pares de negociação para varrer"
+            )
+            
+            interval_list = st.multiselect(
+                "INTERVAL (selecione um ou mais)",
+                options=AVAILABLE_INTERVALS,
+                default=["1h"],
+                key="grid_interval",
+                help="Escolha os intervalos temporais"
+            )
+            
+            currency_list = st.multiselect(
+                "CURRENCY (selecione uma ou mais)",
+                options=AVAILABLE_CURRENCIES,
+                default=["USDT"],
+                key="grid_currency",
+                help="Escolha as moedas de cotação"
+            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                exchange_list_ui = st.multiselect(
+                    "EXCHANGE (opcional)",
+                    options=AVAILABLE_EXCHANGES,
+                    default=[],
+                    key="grid_exchange",
+                    help="Deixe vazio para buscar de todas"
+                )
+                exchange_list = exchange_list_ui if exchange_list_ui else [None]
+            
+            with col2:
+                source_list_ui = st.multiselect(
+                    "SOURCE (opcional)",
+                    options=AVAILABLE_SOURCES,
+                    default=[],
+                    key="grid_source",
+                    help="Deixe vazio para buscar de todas"
+                )
+                source_list = source_list_ui if source_list_ui else [None]
+            
+            st.caption(
+                f"🔍 Grid varrará: {len(symbol_list)} symbol(s) × "
+                f"{len(interval_list)} interval(s) × {len(currency_list)} currency(s) = "
+                f"**{len(symbol_list) * len(interval_list) * len(currency_list)} combinações de dados**"
+            )
 
         with st.expander("Janela temporal & Split", expanded=True):
             sd = st.text_input("START_DATE (YYYY-MM-DD HH:MM:SS) — pode listar separado por vírgula", "2017-08-18 00:00:00")
@@ -626,6 +751,11 @@ with tabs[1]:
             "grid_id": grid_id_ui,
             "framework": fw_list,
             "model_type": mt_list,
+            "SYMBOL": symbol_list if symbol_list else ["BTCUSDT"],
+            "INTERVAL": interval_list if interval_list else ["1h"],
+            "CURRENCY": currency_list if currency_list else ["USDT"],
+            "EXCHANGE": exchange_list,
+            "SOURCE": source_list,
             "START_DATE": [s.strip() for s in sd.split(",") if s.strip()],
             "END_DATE":   [s.strip() for s in ed.split(",") if s.strip()],
             "TRAIN_SIZE": train_list if train_list else [0.7],
@@ -760,6 +890,65 @@ with tabs[2]:
             base_config = json.load(f)
         
         st.divider()
+
+        with st.expander("💾 Dados (Fine-tuning)", expanded=True):
+            st.markdown("**Valores detectados do modelo original**")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                symbol_ft = st.selectbox(
+                    "Symbol", 
+                    options=AVAILABLE_SYMBOLS,
+                    index=AVAILABLE_SYMBOLS.index(base_config.get("symbol", "BTCUSDT")) if base_config.get("symbol") in AVAILABLE_SYMBOLS else 0,
+                    key="ft_symbol"
+                )
+            with col2:
+                interval_ft = st.selectbox(
+                    "Interval",
+                    options=AVAILABLE_INTERVALS,
+                    index=AVAILABLE_INTERVALS.index(base_config.get("interval", "1h")) if base_config.get("interval") in AVAILABLE_INTERVALS else 3,
+                    key="ft_interval"
+                )
+            with col3:
+                currency_ft = st.selectbox(
+                    "Currency",
+                    options=AVAILABLE_CURRENCIES,
+                    index=AVAILABLE_CURRENCIES.index(base_config.get("currency", "USDT")) if base_config.get("currency") in AVAILABLE_CURRENCIES else 0,
+                    key="ft_currency"
+                )
+            
+            col4, col5 = st.columns(2)
+            with col4:
+                exchange_opts_ft = ["Todas"] + AVAILABLE_EXCHANGES
+                default_exch = base_config.get("exchange", "Todas")
+                if default_exch not in exchange_opts_ft:
+                    default_exch = "Todas"
+                exchange_ft = st.selectbox(
+                    "Exchange",
+                    options=exchange_opts_ft,
+                    index=exchange_opts_ft.index(default_exch),
+                    key="ft_exchange"
+                )
+            with col5:
+                source_opts_ft = ["Todas"] + AVAILABLE_SOURCES
+                default_src = base_config.get("source", "Todas")
+                if default_src not in source_opts_ft:
+                    default_src = "Todas"
+                source_ft = st.selectbox(
+                    "Source",
+                    options=source_opts_ft,
+                    index=source_opts_ft.index(default_src),
+                    key="ft_source"
+                )
+            
+            exchange_value_ft = None if exchange_ft == "Todas" else exchange_ft
+            source_value_ft = None if source_ft == "Todas" else source_ft
+            
+            
+            st.info(
+                f"🔍 Fine-tuning usará dados de: **{symbol_ft}** ({interval_ft}) "
+                f"em **{currency_ft}**"
+            )
         
         # === CONFIGURAÇÃO DO FINE-TUNING ===
         with st.expander("⚙️ Configuração do Fine-tuning", expanded=True):
@@ -893,6 +1082,14 @@ with tabs[2]:
             new_config["output_units"] = int(steps_ahead)
             new_config["run_id"] = str(uuid.uuid4())[:8]
             new_config["normalization"] = norm_cfg_ft
+            new_config["symbol"] = symbol_ft
+            new_config["interval"] = interval_ft
+            new_config["currency"] = currency_ft
+            
+            if exchange_value_ft:
+                new_config["exchange"] = exchange_value_ft
+            if source_value_ft:
+                new_config["source"] = source_value_ft
             
             if use_seed:
                 new_config["seed"] = int(seed)
@@ -943,6 +1140,11 @@ with tabs[2]:
                         framework=selected_model["framework"],
                         model_type=selected_model["model_type"],
                         original_run_id=selected_model["run_uuid"],
+                        symbol=new_config["symbol"],
+                        interval=new_config["interval"],
+                        currency=new_config["currency"],
+                        source=new_config.get("source"),
+                        exchange=new_config.get("exchange"),
                     )
                     
                     st.success("Fine-tuning concluído com sucesso!")
