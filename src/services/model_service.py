@@ -8,6 +8,7 @@ import signal
 from contextlib import contextmanager
 
 from database.model_nahas import TrainingRun, FineTuningRun, db, GridResult
+from database.model_nocapital import PriceHistory
 from services.trainer_factory import TrainerFactory
 from data.data_processing import DataProcessor
 from utils.technical_indicators import TechnicalIndicators
@@ -299,10 +300,120 @@ class ModelService:
         ts_test = ts_all[n_train + n_val:]
         return ts_train, ts_val, ts_test
 
+
+    # -------------------------
+    # Helper: gera nome descritivo do modelo
+    # -------------------------
+    @staticmethod
+    def _generate_model_identifier(
+        symbol: str,
+        interval: str,
+        currency: str = None,
+        exchange: str = None,
+        source: str = None,
+        hash_id: str = None
+    ) -> dict:
+        """
+        Gera identificador padronizado e metadados para o modelo.
+        
+        Returns:
+            dict com 'prefix', 'full_name', 'metadata'
+        """
+        # Limpar valores None ou vazios
+        parts = [
+            symbol.upper() if symbol else "UNKNOWN",
+            interval.lower() if interval else "unknown",
+        ]
+        
+        # Adicionar currency se disponível
+        if currency:
+            parts.append(currency.upper())
+        
+        # Adicionar exchange se disponível (resumido)
+        if exchange:
+            parts.append(exchange.upper()[:3])  # BINANCE -> BIN
+        
+        # Criar prefix compacto
+        prefix = "_".join(parts)
+        
+        # Nome completo com hash
+        if hash_id:
+            full_name = f"{prefix}_{hash_id}"
+        else:
+            full_name = prefix
+        
+        # Metadados completos
+        metadata = {
+            "symbol": symbol,
+            "interval": interval,
+            "currency": currency,
+            "exchange": exchange,
+            "source": source,
+            "model_identifier": full_name,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        return {
+            "prefix": prefix,
+            "full_name": full_name,
+            "metadata": metadata
+        }
+    
+    # -------------------------
+    # Helper: salva metadados do modelo
+    # -------------------------
+    @staticmethod
+    def _save_model_metadata(base_path: str, metadata: dict, config: dict):
+        """Salva arquivo JSON com metadados do modelo para uso futuro."""
+        metadata_path = os.path.join(base_path, "model_metadata.json")
+        
+        full_metadata = {
+            **metadata,
+            "config_summary": {
+                "window_size": config.get("window_size"),
+                "steps_ahead": config.get("steps_ahead"),
+                "target_column": config.get("target_column"),
+                "normalization": config.get("normalization"),
+                "framework": config.get("framework"),
+                "model_type": config.get("model_type"),
+            }
+        }
+        
+        with open(metadata_path, "w") as f:
+            json.dump(full_metadata, f, indent=4)
+        
+        print(f"[METADATA] Salvo: {metadata_path}")
+        return metadata_path
+
+    # -------------------------
+    # Helper: carrega metadados do modelo
+    # -------------------------
+    @staticmethod
+    def _load_model_metadata(model_path: str) -> dict:
+        """
+        Carrega metadados de um modelo a partir do diretório.
+        
+        Args:
+            model_path: Caminho completo do arquivo do modelo
+            
+        Returns:
+            dict com metadados ou dict vazio se não encontrar
+        """
+        # Subir 1 nível para pegar a pasta results/train/{hash_id}/
+        base_dir = os.path.dirname(os.path.dirname(model_path))
+        metadata_path = os.path.join(base_dir, "model_metadata.json")
+        
+        if os.path.exists(metadata_path):
+            with open(metadata_path, "r") as f:
+                return json.load(f)
+        
+        print(f"[WARN] Metadados não encontrados: {metadata_path}")
+        return {}
+    
     # -------------------------
     # TREINO
     # -------------------------
-    def train(self, config: dict, framework: str, model_type: str, X=None, y=None, run_id=None, artifacts_base: str = "train"):
+    def train(self, config: dict, framework: str, model_type: str, X=None, y=None, run_id=None, artifacts_base: str = "train",  symbol: str = None, interval: str = None, currency: str = None, source: str = None, exchange: str = None):
         seed = prepare_and_set_seed(config)
         config["seed"] = seed
 
@@ -312,27 +423,74 @@ class ModelService:
             elif framework.lower() == "pytorch":
                 set_cuda_pytorch(config.get("gpu_index", 0))
 
+        symbol = symbol or config.get("symbol", "BTCUSDT")
+        interval = interval or config.get("interval", "1h")
+        currency = currency or config.get("currency", "USDT")
+        source = source or config.get("source")
+        exchange = exchange or config.get("exchange")
+
+        config["symbol"] = symbol
+        config["interval"] = interval
+        config["currency"] = currency 
+        if source:
+            config["source"] = source
+        if exchange:
+            config["exchange"] = exchange
+
         norm_strategy, scaler_type, x_mode, y_mode, evcfg = self._norm_cfg(config)
         hash_id = run_id or config.get("run_id") or datetime.now().strftime("%Y%m%d_%H%M%S")
+        model_id_info = self._generate_model_identifier(
+            symbol=symbol,
+            interval=interval,
+            currency=currency,
+            exchange=exchange,
+            source=source,
+            hash_id=hash_id
+        )
         base_path = self._get_save_dirs(artifacts_base, hash_id)
         ext = {"keras": ".keras", "tensorflow": ".keras", "pytorch": ".pt"}.get(framework.lower(), ".model")
 
-        model_path = os.path.join(base_path, "models", f"model_{hash_id}{ext}")
-        csv_path = os.path.join(base_path, "csv", f"results_{hash_id}.csv")
+        model_filename = f"model_{model_id_info['full_name']}{ext}"
+        csv_filename = f"results_{model_id_info['full_name']}.csv"
+        config_filename = f"config_{model_id_info['full_name']}.json"
+
+        model_path = os.path.join(base_path, "models", model_filename)
+        csv_path = os.path.join(base_path, "csv", csv_filename)
         scaler_dir = os.path.join(base_path, "scaler")
-        config_path = os.path.join(base_path, "hiperparams", f"config_{hash_id}.json")
+        config_path = os.path.join(base_path, "hiperparams", config_filename)
         metrics_path = os.path.join(base_path, "metrics.json")
 
         with open(config_path, "w") as f:
             json.dump(config, f, indent=4)
 
+        metadata_path = self._save_model_metadata(base_path, model_id_info['metadata'], config)
+
         # -------------------------
         # 1) Dados
         # -------------------------
         if X is None or y is None:
-            from database.model_binance import HourlyQuoteBitcoin
-            df = HourlyQuoteBitcoin.get_between_dates(config.get("start_date"), config.get("end_date"))
-
+            df = PriceHistory.get_between_dates(
+                start_date=config.get("start_date"),
+                end_date=config.get("end_date"),
+                symbol=symbol,
+                interval=interval,
+                source=source,
+                exchange=exchange,
+                with_meta=True
+            )
+            
+            if df.empty:
+                raise ValueError(
+                    f"Nenhum dado encontrado para: {symbol} {interval} {currency}\n"
+                    f"Exchange: {exchange}, Source: {source}\n"
+                    f"Período: {config.get('start_date')} a {config.get('end_date')}"
+                )
+            
+            if currency and 'currency' in df.columns:
+                df = df[df['currency'] == currency]
+                if df.empty:
+                    raise ValueError(f"Nenhum dado encontrado para currency={currency}")
+        
             if config.get("indicators_apply"):
                 df = TechnicalIndicators.process_indicators(df, config.get("indicators_apply"))
 
@@ -631,7 +789,7 @@ class ModelService:
     # -------------------------
     # FINE-TUNE PRODUCTION-READY
     # -------------------------
-    def finetune(self, model_path, config, framework, model_type, original_run_id, run_id=None):
+    def finetune(self, model_path, config, framework, model_type, original_run_id, run_id=None, symbol: str = None, interval: str = None, currency: str = None, source: str = None, exchange: str = None):
         """
         Fine-tuning production-ready com:
         - Validação de compatibilidade
@@ -671,6 +829,20 @@ class ModelService:
             os.makedirs(backup_dir, exist_ok=True)
             backup_model_path = os.path.join(backup_dir, os.path.basename(model_path))
             
+            symbol = symbol or config.get("symbol") or (original_config or {}).get("symbol", "BTCUSDT")
+            interval = interval or config.get("interval") or (original_config or {}).get("interval", "1h")
+            currency = currency or config.get("currency") or (original_config or {}).get("currency", "USDT")
+            source = source or config.get("source") or (original_config or {}).get("source")
+            exchange = exchange or config.get("exchange") or (original_config or {}).get("exchange")
+            
+            config["symbol"] = symbol
+            config["interval"] = interval
+            config["currency"] = currency
+            if source:
+                config["source"] = source
+            if exchange:
+                config["exchange"] = exchange
+
             try:
                 shutil.copy2(model_path, backup_model_path)
                 logger.info(f"[FINETUNE] Backup salvo em: {backup_model_path}")
@@ -720,8 +892,28 @@ class ModelService:
             
             # === 6. CARREGAR E PROCESSAR DADOS ===
             logger.info("[FINETUNE] Carregando dados para fine-tuning...")
-            from database.model_binance import HourlyQuoteBitcoin
-            df = HourlyQuoteBitcoin.get_between_dates(config.get("start_date"), config.get("end_date"))
+            df = PriceHistory.get_between_dates(
+                start_date=config.get("start_date"),
+                end_date=config.get("end_date"),
+                symbol=symbol,
+                interval=interval,
+                source=source,
+                exchange=exchange,
+                with_meta=True
+            )
+            
+            if df.empty:
+                raise ValueError(
+                    f"Nenhum dado encontrado para fine-tuning:\n"
+                    f"  Symbol: {symbol}, Interval: {interval}, Currency: {currency}"
+                )
+            
+            # Filtrar por currency
+            if currency and 'currency' in df.columns:
+                df_filtered = df[df['currency'] == currency]
+                if not df_filtered.empty:
+                    df = df_filtered
+                    logger.info(f"[FINETUNE] Filtrado para currency={currency}")
             
             if config.get("indicators_apply"):
                 df = TechnicalIndicators.process_indicators(df, config.get("indicators_apply"))
