@@ -49,7 +49,7 @@ class EvoMSNNormalizer:
         agg: str = "fft",                  # "fft" | "uniform"
         eps: float = 1e-8,
         random_state: int = 42,
-        predictor_type: str = "linear",    # <--- NOVO
+        predictor_type: str = "linear",
         hidden: tuple[int, int] = (128, 64),
     ):
         self.L = int(window_size)
@@ -140,7 +140,6 @@ class EvoMSNNormalizer:
                 random_state=self.random_state,
                 max_iter=500,
             )
-        # "linear"
         return LinearRegression()
 
     def _fit_stat_predictors(self, Xs: np.ndarray, Ys: np.ndarray) -> Tuple[object, object]:
@@ -153,6 +152,12 @@ class EvoMSNNormalizer:
         y_phi = phi.squeeze(2)  # (N, S)
         y_xi  = xi.squeeze(2)   # (N, S)
 
+        # Evita warnings quando S==1 para MLPRegressor
+        if y_phi.ndim == 2 and y_phi.shape[1] == 1:
+            y_phi = y_phi.ravel()
+        if y_xi.ndim == 2 and y_xi.shape[1] == 1:
+            y_xi = y_xi.ravel()
+
         phi_reg = self._make_predictor()
         xi_reg  = self._make_predictor()
 
@@ -164,9 +169,20 @@ class EvoMSNNormalizer:
         mu, std = self._stats_X(Xs)  # (N,J,1,C)
         feats_mu = mu.squeeze(2).reshape(mu.shape[0], -1)
         feats_std = std.squeeze(2).reshape(std.shape[0], -1)
-        phi_hat = phi_reg.predict(feats_mu)[:, :, None]     # (N,S,1)
-        xi_hat  = xi_reg.predict(feats_std)[:, :, None]     # (N,S,1)
-        xi_hat = np.maximum(xi_hat, 0.0)
+
+        # Saída pode vir 1D (N,) quando S==1 → padroniza para (N, S)
+        phi_hat = phi_reg.predict(feats_mu)
+        if phi_hat.ndim == 1:
+            phi_hat = phi_hat.reshape(-1, 1)
+
+        xi_hat = xi_reg.predict(feats_std)
+        if xi_hat.ndim == 1:
+            xi_hat = xi_hat.reshape(-1, 1)
+
+        # Para o restante do pipeline, esperamos (N,S,1)
+        phi_hat = phi_hat[:, :, None]
+        xi_hat  = xi_hat[:, :, None]
+        xi_hat  = np.maximum(xi_hat, 0.0)
         return phi_hat, xi_hat
 
     # ---------------------- pesos de ensemble ----------------------
@@ -345,6 +361,3 @@ class EvoMSNLikeNormalizer(EvoMSNNormalizer):
         last_mu = mu[:, -1:, :, :].mean(axis=3)    # (N,1,1)
         last_std = std[:, -1:, :, :].mean(axis=3)  # (N,1,1)
         return last_mu, np.maximum(last_std, 0.0)
-
-
-

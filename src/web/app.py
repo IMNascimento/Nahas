@@ -1,4 +1,3 @@
-# app.py
 import sys
 import os
 import threading
@@ -21,6 +20,14 @@ if db.is_closed():
 service = ModelService()
 live_run_stop_flag = threading.Event()
 
+# ---------------------------------
+# CONSTANTES PARA OPÇÕES DE DADOS
+# ---------------------------------
+AVAILABLE_SYMBOLS = ["BTCUSDT", "BTCBRL", "ETHUSDT", "ETHBRL"]
+AVAILABLE_CURRENCIES = ["USDT", "BRL"]
+AVAILABLE_EXCHANGES = ["PUBLIC", "BINANCE"]
+AVAILABLE_SOURCES = ["binance", "kaggle"]
+AVAILABLE_INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"]
 # -- Parâmetros para opções
 frameworks = ["keras", "pytorch", "tensorflow"]
 model_types = ["lstm", "transformer"]
@@ -260,6 +267,61 @@ with tabs[0]:
     model_type = st.selectbox("Modelo", model_types, key="model_type_train")
     use_gpu, gpu_index, gpu_label = gpu_selector(framework, key_prefix="train")
 
+    with st.expander("💾 Fonte e Características dos Dados", expanded=True):
+        st.markdown("**Defina qual ativo e período você deseja usar para treinar o modelo**")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            symbol = st.selectbox(
+                "Symbol (Símbolo do Ativo)", 
+                options=AVAILABLE_SYMBOLS,
+                index=0,  # default: BTCUSDT
+                key="train_symbol",
+                help="Escolha o par de negociação"
+            )
+        with col2:
+            interval = st.selectbox(
+                "Interval (Intervalo Temporal)",
+                options=AVAILABLE_INTERVALS,
+                index=3,  # default: 1h
+                key="train_interval",
+                help="Intervalo dos candles"
+            )
+        with col3:
+            currency = st.selectbox(
+                "Currency (Moeda de Cotação)",
+                options=AVAILABLE_CURRENCIES,
+                index=0,  # default: USDT
+                key="train_currency",
+                help="Moeda de cotação do ativo"
+            )
+        
+        col4, col5 = st.columns(2)
+        with col4:
+            exchange = st.selectbox(
+                "Exchange",
+                options=["Todas"] + AVAILABLE_EXCHANGES,  # Opção "Todas" = None
+                index=0,  # default: Todas
+                key="train_exchange",
+                help="Exchange de origem dos dados"
+            )
+        with col5:
+            source = st.selectbox(
+                "Source (Fonte dos Dados)",
+                options=["Todas"] + AVAILABLE_SOURCES,
+                index=0,  # default: Todas
+                key="train_source",
+                help="Fonte dos dados históricos"
+            )
+        
+        exchange_value = None if exchange == "Todas" else exchange
+        source_value = None if source == "Todas" else source
+        
+        st.caption(
+            f"🔍 Modelo será identificado como: **{symbol}_{interval}_{currency}**"
+            f"{f'_{exchange.upper()[:3]}' if exchange else ''}"
+        )
+
     st.subheader("Colunas Financeiras e alvos (target)")
     indicator_columns = []
     indicators_apply = {}
@@ -359,7 +421,16 @@ with tabs[0]:
                 "run_id": str(uuid.uuid4())[:8],
                 # usa a NORMALIZAÇÃO escolhidinha fora do form
                 "normalization": norm_cfg,
+                "symbol": symbol,
+                "interval": interval,
+                "currency": currency,
             }
+
+            if exchange_value:
+                config["exchange"] = exchange_value
+            if source_value:
+                config["source"] = source_value
+
             if model_type == "lstm":
                 config["layers_config"] = [int(x) for x in layers.split(",") if x.strip()]
                 config["bidirectional"] = bool(bidirectional)
@@ -455,6 +526,60 @@ with tabs[1]:
             grid_id_ui = st.text_input("grid_id (opcional)", value="grid_ui")
             fw_list = st.multiselect("Framework(s)", frameworks, default=["keras"])
             mt_list = st.multiselect("Model type(s)", model_types, default=["lstm"])
+        
+        with st.expander("💾 Dados do Ativo (Symbol, Interval, Currency)", expanded=True):
+            st.markdown("**Defina os ativos e períodos para varrer no Grid Search**")
+            
+            symbol_list = st.multiselect(
+                "SYMBOL (selecione um ou mais)",
+                options=AVAILABLE_SYMBOLS,
+                default=["BTCUSDT"],
+                key="grid_symbol",
+                help="Escolha os pares de negociação para varrer"
+            )
+            
+            interval_list = st.multiselect(
+                "INTERVAL (selecione um ou mais)",
+                options=AVAILABLE_INTERVALS,
+                default=["1h"],
+                key="grid_interval",
+                help="Escolha os intervalos temporais"
+            )
+            
+            currency_list = st.multiselect(
+                "CURRENCY (selecione uma ou mais)",
+                options=AVAILABLE_CURRENCIES,
+                default=["USDT"],
+                key="grid_currency",
+                help="Escolha as moedas de cotação"
+            )
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                exchange_list_ui = st.multiselect(
+                    "EXCHANGE (opcional)",
+                    options=AVAILABLE_EXCHANGES,
+                    default=[],
+                    key="grid_exchange",
+                    help="Deixe vazio para buscar de todas"
+                )
+                exchange_list = exchange_list_ui if exchange_list_ui else [None]
+            
+            with col2:
+                source_list_ui = st.multiselect(
+                    "SOURCE (opcional)",
+                    options=AVAILABLE_SOURCES,
+                    default=[],
+                    key="grid_source",
+                    help="Deixe vazio para buscar de todas"
+                )
+                source_list = source_list_ui if source_list_ui else [None]
+            
+            st.caption(
+                f"🔍 Grid varrará: {len(symbol_list)} symbol(s) × "
+                f"{len(interval_list)} interval(s) × {len(currency_list)} currency(s) = "
+                f"**{len(symbol_list) * len(interval_list) * len(currency_list)} combinações de dados**"
+            )
 
         with st.expander("Janela temporal & Split", expanded=True):
             sd = st.text_input("START_DATE (YYYY-MM-DD HH:MM:SS) — pode listar separado por vírgula", "2017-08-18 00:00:00")
@@ -626,6 +751,11 @@ with tabs[1]:
             "grid_id": grid_id_ui,
             "framework": fw_list,
             "model_type": mt_list,
+            "SYMBOL": symbol_list if symbol_list else ["BTCUSDT"],
+            "INTERVAL": interval_list if interval_list else ["1h"],
+            "CURRENCY": currency_list if currency_list else ["USDT"],
+            "EXCHANGE": exchange_list,
+            "SOURCE": source_list,
             "START_DATE": [s.strip() for s in sd.split(",") if s.strip()],
             "END_DATE":   [s.strip() for s in ed.split(",") if s.strip()],
             "TRAIN_SIZE": train_list if train_list else [0.7],
@@ -713,74 +843,226 @@ with tabs[1]:
 # 3. FINE-TUNING
 # ---------------------------------
 with tabs[2]:
-    st.header("Fine-tuning de Modelo")
+    st.header("Fine-tuning de Modelo Production-Ready")
+    st.info("🔧 Fine-tuning com validação automática, backup e comparação de performance")
+    
     models = list_all_models()
     selected_model = model_dropdown(models, key="finetune_model")
+    
     if selected_model is not None:
         use_gpu_ft, gpu_index_ft, gpu_label_ft = gpu_selector(selected_model["framework"], key_prefix="finetune")
-        st.code(f"Modelo selecionado: {selected_model['model_path']}")
+        
+        # === INFORMAÇÕES DO MODELO ORIGINAL ===
+        with st.expander("📊 Informações do Modelo Original", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Framework", selected_model["framework"])
+                st.metric("Tipo", selected_model["model_type"])
+            with col2:
+                st.metric("Run ID", selected_model["run_uuid"])
+                st.metric("Seed", selected_model.get("seed", "N/A"))
+            with col3:
+                st.metric("Train Loss", f"{selected_model.get('train_loss', 0):.4f}" if selected_model.get('train_loss') else "N/A")
+                st.metric("Val Loss", f"{selected_model.get('val_loss', 0):.4f}" if selected_model.get('val_loss') else "N/A")
+            
+            st.code(f"Path: {selected_model['model_path']}", language="text")
+            
+            # Métricas originais se disponíveis
+            if selected_model.get("metrics_json"):
+                try:
+                    orig_metrics = json.loads(selected_model["metrics_json"])
+                    st.markdown("**Métricas do Teste Original:**")
+                    test_m = orig_metrics.get("test", {})
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("RMSE", f"{test_m.get('rmse', 0):.4f}")
+                    with col2:
+                        st.metric("MAE", f"{test_m.get('mae', 0):.4f}")
+                    with col3:
+                        st.metric("MSE", f"{test_m.get('mse', 0):.4f}")
+                    with col4:
+                        st.metric("R²", f"{test_m.get('r2', 0):.4f}")
+                except Exception:
+                    pass
+        
+        # === CONFIGURAÇÃO BASE ===
         with open(selected_model["config_path"], "r") as f:
             base_config = json.load(f)
+        
+        st.divider()
 
-        st.markdown("#### Hiperparâmetros do modelo (ajuste apenas o que quiser):")
-
-        start_date = st.date_input(
-            "Data Inicial dos dados",
-            value=datetime.datetime.strptime(base_config.get("start_date", "2017-08-18 00:00:00"), "%Y-%m-%d %H:%M:%S")
-        )
-        end_date = st.date_input(
-            "Data Final dos dados",
-            value=datetime.datetime.strptime(base_config.get("end_date", "2025-01-19 23:59:59"), "%Y-%m-%d %H:%M:%S")
-        )
-        window_size = st.number_input("Window Size", value=base_config.get("window_size", 96))
-        batch_size = st.number_input("Batch Size", value=base_config.get("batch_size", 32))
-        epochs = st.number_input("Epochs (Fine-tune)", value=base_config.get("epochs", 10))
-        patience = st.number_input("Patience", value=base_config.get("patience", 5))
-        learning_rate = st.number_input("Learning Rate", value=base_config.get("learning_rate", 0.0001), format="%.5f")
-        dropout = st.number_input("Dropout", value=base_config.get("dropout", 0.2), format="%.2f")
-        optimizer = st.selectbox("Optimizer", ["Adam", "RMSprop", "SGD"], index=_index_or_default(["Adam", "RMSprop", "SGD"], base_config.get("optimizer", "Adam")))
-        loss_fn = st.selectbox("Função de Perda", ["mean_squared_error", "mean_absolute_error", "mse"], index=_index_or_default(["mean_squared_error", "mean_absolute_error", "mse"], base_config.get("loss_fn", "mean_squared_error")))
-        steps_ahead = st.number_input("Steps Ahead (outputs)", value=base_config.get("steps_ahead", 1), min_value=1, max_value=50)
-        target_column = st.selectbox(
-            "Coluna alvo (target column)",
-            options=base_config.get("relevant_columns", ["close"]),
-            index=_index_or_default(base_config.get("relevant_columns", ["close"]), base_config.get("target_column", "close")),
-            key="finetune_target_column"
-        )
-        relevant_columns = st.multiselect("Colunas usadas como features", options=base_config.get("relevant_columns", []), default=base_config.get("relevant_columns", []))
-        train_size = st.number_input("Train Size", value=base_config.get("train_size", 0.7), min_value=0.01, max_value=0.99, step=0.01, format="%.2f")
-        validation_split = st.number_input("Validation Split", value=base_config.get("validation_split", 0.15), min_value=0.01, max_value=0.99, step=0.01, format="%.2f")
-
-        use_seed = st.checkbox("Usar seed fixa para reprodução", value="seed" in base_config)
-        if use_seed:
-            seed = st.number_input("Seed (reprodutibilidade)", min_value=0, max_value=2**32-1, value=int(base_config.get("seed", 42)), step=1)
-        else:
-            seed = None
-
+        with st.expander("💾 Dados (Fine-tuning)", expanded=True):
+            st.markdown("**Valores detectados do modelo original**")
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                symbol_ft = st.selectbox(
+                    "Symbol", 
+                    options=AVAILABLE_SYMBOLS,
+                    index=AVAILABLE_SYMBOLS.index(base_config.get("symbol", "BTCUSDT")) if base_config.get("symbol") in AVAILABLE_SYMBOLS else 0,
+                    key="ft_symbol"
+                )
+            with col2:
+                interval_ft = st.selectbox(
+                    "Interval",
+                    options=AVAILABLE_INTERVALS,
+                    index=AVAILABLE_INTERVALS.index(base_config.get("interval", "1h")) if base_config.get("interval") in AVAILABLE_INTERVALS else 3,
+                    key="ft_interval"
+                )
+            with col3:
+                currency_ft = st.selectbox(
+                    "Currency",
+                    options=AVAILABLE_CURRENCIES,
+                    index=AVAILABLE_CURRENCIES.index(base_config.get("currency", "USDT")) if base_config.get("currency") in AVAILABLE_CURRENCIES else 0,
+                    key="ft_currency"
+                )
+            
+            col4, col5 = st.columns(2)
+            with col4:
+                exchange_opts_ft = ["Todas"] + AVAILABLE_EXCHANGES
+                default_exch = base_config.get("exchange", "Todas")
+                if default_exch not in exchange_opts_ft:
+                    default_exch = "Todas"
+                exchange_ft = st.selectbox(
+                    "Exchange",
+                    options=exchange_opts_ft,
+                    index=exchange_opts_ft.index(default_exch),
+                    key="ft_exchange"
+                )
+            with col5:
+                source_opts_ft = ["Todas"] + AVAILABLE_SOURCES
+                default_src = base_config.get("source", "Todas")
+                if default_src not in source_opts_ft:
+                    default_src = "Todas"
+                source_ft = st.selectbox(
+                    "Source",
+                    options=source_opts_ft,
+                    index=source_opts_ft.index(default_src),
+                    key="ft_source"
+                )
+            
+            exchange_value_ft = None if exchange_ft == "Todas" else exchange_ft
+            source_value_ft = None if source_ft == "Todas" else source_ft
+            
+            
+            st.info(
+                f"🔍 Fine-tuning usará dados de: **{symbol_ft}** ({interval_ft}) "
+                f"em **{currency_ft}**"
+            )
+        
+        # === CONFIGURAÇÃO DO FINE-TUNING ===
+        with st.expander("⚙️ Configuração do Fine-tuning", expanded=True):
+            st.markdown("**Ajuste apenas os parâmetros que deseja modificar**")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                start_date = st.date_input(
+                    "Data Inicial",
+                    value=datetime.datetime.strptime(base_config.get("start_date", "2017-08-18 00:00:00"), "%Y-%m-%d %H:%M:%S"),
+                    key="ft_start"
+                )
+                train_size = st.number_input("Train Size", value=base_config.get("train_size", 0.7), 
+                                            min_value=0.01, max_value=0.99, step=0.01, format="%.2f")
+                window_size = st.number_input("Window Size", value=base_config.get("window_size", 96), key="ft_window")
+                epochs = st.number_input("Epochs (Fine-tune)", value=10, min_value=1, max_value=100, key="ft_epochs",
+                                        help="Menos epochs para fine-tuning (evita overfitting)")
+            
+            with col2:
+                end_date = st.date_input(
+                    "Data Final",
+                    value=datetime.datetime.strptime(base_config.get("end_date", "2025-01-19 23:59:59"), "%Y-%m-%d %H:%M:%S"),
+                    key="ft_end"
+                )
+                validation_split = st.number_input("Validation Split", value=base_config.get("validation_split", 0.15),
+                                                  min_value=0.01, max_value=0.99, step=0.01, format="%.2f")
+                batch_size = st.number_input("Batch Size", value=base_config.get("batch_size", 32), key="ft_batch")
+                patience = st.number_input("Patience", value=5, min_value=1, max_value=20, key="ft_patience")
+            
+            st.markdown("**Hiperparâmetros de Treino**")
+            col3, col4 = st.columns(2)
+            with col3:
+                learning_rate = st.number_input("Learning Rate", value=0.0001, format="%.5f", key="ft_lr",
+                                               help="Use LR menor para fine-tuning")
+                dropout = st.number_input("Dropout", value=base_config.get("dropout", 0.2), format="%.2f", key="ft_dropout")
+            with col4:
+                optimizer = st.selectbox("Optimizer", ["Adam", "RMSprop", "SGD"], 
+                                        index=_index_or_default(["Adam", "RMSprop", "SGD"], base_config.get("optimizer", "Adam")))
+                loss_fn = st.selectbox("Loss Function", ["mean_squared_error", "mean_absolute_error", "mse"],
+                                      index=_index_or_default(["mean_squared_error", "mean_absolute_error", "mse"], 
+                                                             base_config.get("loss_fn", "mean_squared_error")))
+        
+        # === NORMALIZAÇÃO ===
         st.markdown("### Normalização")
         norm_defaults = base_config.get("normalization", {"strategy": "global", "scaler_type": "robust"})
         norm_cfg_ft = normalization_ui(defaults=norm_defaults, key_prefix="finetune")
-
-        # Campos ESPECÍFICOS por tipo de modelo
-        if selected_model["model_type"].lower() == "lstm":
-            layers_config = st.text_input("Layers Config (ex: 128,64)", value=",".join(str(x) for x in base_config.get("layers_config", [128, 64])))
-            bidirectional = st.checkbox("Bidirecional", value=base_config.get("bidirectional", False))
-            l1_reg = st.number_input("L1 Regularization", value=base_config.get("l1_reg", 0.0))
-            l2_reg = st.number_input("L2 Regularization", value=base_config.get("l2_reg", 0.0))
-            activation_functions = st.text_input("Funções de Ativação (ex: tanh,relu)", value=",".join(base_config.get("activation_functions", ["tanh", "tanh"])))
-            recurrent_dropout = st.number_input("Recurrent Dropout", value=base_config.get("recurrent_dropout", 0.0), format="%.2f")
-        elif selected_model["model_type"].lower() == "transformer":
-            num_layers = st.number_input("Num Layers", value=base_config.get("num_layers", 2))
-            embed_dim = st.number_input("Embed Dim", value=base_config.get("embed_dim", 32))
-            num_heads = st.number_input("Num Heads", value=base_config.get("num_heads", 2))
-            ff_dim = st.number_input("FF Dim", value=base_config.get("ff_dim", 64))
-            activation = st.text_input("Função de Ativação", value=base_config.get("activation", "relu"))
-            l1_reg = st.number_input("L1 Regularization", value=base_config.get("l1_reg", 0.0))
-            l2_reg = st.number_input("L2 Regularization", value=base_config.get("l2_reg", 0.0))
+        
+        # === FEATURES E TARGET ===
+        with st.expander("📋 Features e Target", expanded=False):
+            target_column = st.selectbox(
+                "Target Column",
+                options=base_config.get("relevant_columns", ["close"]),
+                index=_index_or_default(base_config.get("relevant_columns", ["close"]), 
+                                       base_config.get("target_column", "close")),
+                key="ft_target"
+            )
+            relevant_columns = st.multiselect(
+                "Features (relevant_columns)", 
+                options=base_config.get("relevant_columns", []),
+                default=base_config.get("relevant_columns", []),
+                key="ft_features"
+            )
+            steps_ahead = st.number_input("Steps Ahead", value=base_config.get("steps_ahead", 1),
+                                         min_value=1, max_value=50, key="ft_steps")
+        
+        # === SEED ===
+        use_seed = st.checkbox("Usar seed fixa", value="seed" in base_config, key="ft_use_seed")
+        if use_seed:
+            seed = st.number_input("Seed", min_value=0, max_value=2**32-1, 
+                                  value=int(base_config.get("seed", 42)), step=1, key="ft_seed")
         else:
-            st.warning("Tipo de modelo não suportado neste bloco!")
-
-        if st.button("Executar Fine-tuning", key="btn_finetune"):
+            seed = None
+        
+        # === PARÂMETROS ESPECÍFICOS DO MODELO ===
+        with st.expander("🔧 Arquitetura do Modelo (opcional)", expanded=False):
+            st.info("Deixe como está para manter a arquitetura original. Alterações aqui reconstruirão o modelo.")
+            
+            if selected_model["model_type"].lower() == "lstm":
+                layers_config = st.text_input(
+                    "Layers Config", 
+                    value=",".join(str(x) for x in base_config.get("layers_config", [128, 64])),
+                    key="ft_layers"
+                )
+                bidirectional = st.checkbox("Bidirectional", value=base_config.get("bidirectional", False), key="ft_bidir")
+                l1_reg = st.number_input("L1 Reg", value=base_config.get("l1_reg", 0.0), key="ft_l1")
+                l2_reg = st.number_input("L2 Reg", value=base_config.get("l2_reg", 0.0), key="ft_l2")
+                activation_functions = st.text_input(
+                    "Activation Functions", 
+                    value=",".join(base_config.get("activation_functions", ["tanh", "tanh"])),
+                    key="ft_act"
+                )
+                recurrent_dropout = st.number_input("Recurrent Dropout", value=base_config.get("recurrent_dropout", 0.0),
+                                                   format="%.2f", key="ft_rec_drop")
+            
+            elif selected_model["model_type"].lower() == "transformer":
+                num_layers = st.number_input("Num Layers", value=base_config.get("num_layers", 2), key="ft_num_layers")
+                embed_dim = st.number_input("Embed Dim", value=base_config.get("embed_dim", 32), key="ft_embed")
+                num_heads = st.number_input("Num Heads", value=base_config.get("num_heads", 2), key="ft_heads")
+                ff_dim = st.number_input("FF Dim", value=base_config.get("ff_dim", 64), key="ft_ff")
+                activation = st.text_input("Activation", value=base_config.get("activation", "relu"), key="ft_act_tr")
+                l1_reg = st.number_input("L1 Reg", value=base_config.get("l1_reg", 0.0), key="ft_l1_tr")
+                l2_reg = st.number_input("L2 Reg", value=base_config.get("l2_reg", 0.0), key="ft_l2_tr")
+        
+        st.divider()
+        
+        # === BOTÃO DE EXECUÇÃO ===
+        col_btn1, col_btn2 = st.columns([3, 1])
+        with col_btn1:
+            execute_finetune = st.button("🚀 Executar Fine-tuning", type="primary", use_container_width=True, key="btn_exec_ft")
+        with col_btn2:
+            show_config = st.checkbox("Mostrar config", value=False, key="ft_show_cfg")
+        
+        if execute_finetune:
+            # Montar config
             new_config = base_config.copy()
             new_config["window_size"] = int(window_size)
             new_config["batch_size"] = int(batch_size)
@@ -800,19 +1082,28 @@ with tabs[2]:
             new_config["output_units"] = int(steps_ahead)
             new_config["run_id"] = str(uuid.uuid4())[:8]
             new_config["normalization"] = norm_cfg_ft
-
+            new_config["symbol"] = symbol_ft
+            new_config["interval"] = interval_ft
+            new_config["currency"] = currency_ft
+            
+            if exchange_value_ft:
+                new_config["exchange"] = exchange_value_ft
+            if source_value_ft:
+                new_config["source"] = source_value_ft
+            
             if use_seed:
                 new_config["seed"] = int(seed)
             else:
                 new_config.pop("seed", None)
-
+            
             if use_gpu_ft:
                 new_config["use_gpu"] = True
                 new_config["gpu_index"] = gpu_index_ft
             else:
                 new_config["use_gpu"] = False
                 new_config["gpu_index"] = None
-
+            
+            # Parâmetros específicos
             if selected_model["model_type"].lower() == "lstm":
                 new_config["layers_config"] = [int(x) for x in layers_config.split(",") if x.strip()]
                 new_config["bidirectional"] = bool(bidirectional)
@@ -828,17 +1119,130 @@ with tabs[2]:
                 new_config["activation"] = activation
                 new_config["l1_reg"] = float(l1_reg)
                 new_config["l2_reg"] = float(l2_reg)
+            
+            if show_config:
+                st.json(new_config)
 
-            with st.spinner("Executando fine-tuning..."):
-                result = service.finetune(
-                    model_path=selected_model["model_path"],
-                    config=new_config,
-                    framework=selected_model["framework"],
-                    model_type=selected_model["model_type"],
-                    original_run_id=selected_model["run_uuid"],
-                )
-            st.success(f"Fine-tuning concluído! Caminho: {result['model_path']}")
-            st.code(json.dumps(result, indent=2))
+            if selected_model["framework"].lower() in ("keras", "tensorflow"):
+                try:
+                    import keras
+                    keras.config.enable_unsafe_deserialization()
+                except Exception:
+                    pass
+
+            
+            # Executar
+            with st.spinner("Executando fine-tuning... (aguarde, pode levar alguns minutos)"):
+                try:
+                    result = service.finetune(
+                        model_path=selected_model["model_path"],
+                        config=new_config,
+                        framework=selected_model["framework"],
+                        model_type=selected_model["model_type"],
+                        original_run_id=selected_model["run_uuid"],
+                        symbol=new_config["symbol"],
+                        interval=new_config["interval"],
+                        currency=new_config["currency"],
+                        source=new_config.get("source"),
+                        exchange=new_config.get("exchange"),
+                    )
+                    
+                    st.success("Fine-tuning concluído com sucesso!")
+                    
+                    # Mostrar resultados
+                    st.markdown("### Resultados")
+                    
+                    # Métricas
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Train Loss", f"{result.get('train_loss', 0):.4f}" if result.get('train_loss') else "N/A")
+                    with col2:
+                        st.metric("Val Loss", f"{result.get('val_loss', 0):.4f}" if result.get('val_loss') else "N/A")
+                    with col3:
+                        st.metric("Run ID", result.get('run_id', 'N/A'))
+                    
+                    # Comparação se disponível
+                    if result.get('comparison'):
+                        comp = result['comparison']
+                        st.markdown("### Comparação com Modelo Original")
+                        
+                        if comp.get('metrics_comparison'):
+                            metrics_comp = comp['metrics_comparison']
+                            
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                rmse_comp = metrics_comp.get('rmse', {})
+                                delta_rmse = rmse_comp.get('delta', 0)
+                                st.metric(
+                                    "RMSE (Test)", 
+                                    f"{rmse_comp.get('finetuned', 0):.4f}",
+                                    delta=f"{delta_rmse:.4f}",
+                                    delta_color="inverse"  # Menor é melhor
+                                )
+                                if rmse_comp.get('improvement_pct') is not None:
+                                    st.caption(f"Melhoria: {rmse_comp['improvement_pct']:.2f}%")
+                            
+                            with col2:
+                                mae_comp = metrics_comp.get('mae', {})
+                                delta_mae = mae_comp.get('delta', 0)
+                                st.metric(
+                                    "MAE (Test)",
+                                    f"{mae_comp.get('finetuned', 0):.4f}",
+                                    delta=f"{delta_mae:.4f}",
+                                    delta_color="inverse"
+                                )
+                                if mae_comp.get('improvement_pct') is not None:
+                                    st.caption(f"Melhoria: {mae_comp['improvement_pct']:.2f}%")
+                            
+                            with col3:
+                                r2_comp = metrics_comp.get('r2', {})
+                                delta_r2 = r2_comp.get('delta', 0)
+                                st.metric(
+                                    "R² (Test)",
+                                    f"{r2_comp.get('finetuned', 0):.4f}",
+                                    delta=f"{delta_r2:.4f}",
+                                    delta_color="normal"  # Maior é melhor
+                                )
+                                if r2_comp.get('improvement_pct') is not None:
+                                    st.caption(f"Melhoria: {r2_comp['improvement_pct']:.2f}%")
+                        
+                        # Status da performance
+                        perf_status = comp.get('performance_status', 'UNKNOWN')
+                        if perf_status == "IMPROVED":
+                            st.success("Performance melhorou ou se manteve em relação ao modelo original")
+                        elif perf_status == "DEGRADED":
+                            st.warning("Performance degradou. Considere usar o backup do modelo original.")
+                            st.info(f"Backup disponível em: {result.get('backup_path', 'N/A')}")
+                        else:
+                            st.info("Comparação com baseline não disponível")
+                    
+                    # Arquivos gerados
+                    with st.expander("Arquivos Gerados"):
+                        st.code(f"""
+Modelo Fine-tuned: {result['model_path']}
+Backup Original: {result.get('backup_path', 'N/A')}
+CSV Métricas: {result['csv_path']}
+Comparação: {result.get('comparison_path', 'N/A')}
+Log: {result.get('log_path', 'N/A')}
+                        """, language="text")
+                    
+                    # Download do log
+                    if result.get('log_path') and os.path.exists(result['log_path']):
+                        with open(result['log_path'], "r") as f:
+                            log_content = f.read()
+                        st.download_button(
+                            "Download Log Completo",
+                            data=log_content,
+                            file_name=f"finetune_{result['run_id']}.log",
+                            mime="text/plain"
+                        )
+                
+                except Exception as e:
+                    st.error(f"Erro durante fine-tuning: {type(e).__name__}: {str(e)}")
+                    with st.expander("Stack Trace"):
+                        import traceback
+                        st.code(traceback.format_exc())
 
 # ---------------------------------
 # 4. LIVE RUN
