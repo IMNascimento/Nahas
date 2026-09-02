@@ -143,7 +143,113 @@ def test_diagnosticos_separam_mimetismo_de_skill():
     print("OK  diagnosticos separam mimetismo de habilidade")
 
 
+
+
+# ---------------------------------------------------------------- EvoMSN
+from data.evomsn_normalizer import EvoMSNNormalizer, EvoMSNLikeNormalizer  # noqa: E402
+
+
+def _evomsn_fixture(H=1, L=48, C=4, n=180):
+    close = 100 + np.cumsum(RNG.normal(0, 1, n + L + H))
+    X = np.stack([
+        np.stack([close[i:i + L] + RNG.normal(0, .2, L) for _ in range(C)], axis=1)
+        for i in range(n)
+    ])
+    y = np.stack([close[i + L:i + L + H] for i in range(n)])
+    return X, y, X[:, :, [0]]
+
+
+def _sensibilidade(msn, X, tw, H):
+    """Quanto a saída da rede realmente move a previsão final."""
+    _, _, ctx = msn.transform(X, None, target_windows=tw)
+    a = RNG.normal(0, 1, (ctx["xi_hat_stack"].shape[0], H))
+    _, ea = msn.denorm_and_ensemble(a, ctx)
+    _, eb = msn.denorm_and_ensemble(a + 1.0, ctx)
+    return float(np.mean(np.abs(eb - ea)))
+
+
+def test_evomsn_degenera_sob_horizonte_unitario():
+    """Com H=1 a fatia do alvo é constante: std=0, e a rede é anulada."""
+    X, y, tw = _evomsn_fixture(H=1)
+    msn = EvoMSNNormalizer(window_size=X.shape[1], horizon=1, n_features=X.shape[2],
+                           k_scales=3, short_horizon_policy="legacy")
+    _, yn = msn.fit(X, y, target_windows=tw)
+
+    assert all(msn.degeneracy_report["degenerate_scales"]), "deveria detectar degenerescencia"
+    assert yn.std() < 1e-4, f"alvo do backbone deveria ser ~constante, std={yn.std():.2e}"
+    sens = _sensibilidade(msn, X, tw, 1)
+    assert sens < 1e-6, f"a saida da rede nao deveria importar em legacy, sens={sens:.2e}"
+    print(f"OK  legacy degenera: std_alvo={yn.std():.2e}, sensibilidade={sens:.2e}")
+
+
+def test_evomsn_window_stats_devolve_a_rede():
+    """Com estatísticas da janela, o alvo volta a ter escala e a rede volta a importar."""
+    X, y, tw = _evomsn_fixture(H=1)
+    msn = EvoMSNNormalizer(window_size=X.shape[1], horizon=1, n_features=X.shape[2],
+                           k_scales=3, short_horizon_policy="window_stats")
+    _, yn = msn.fit(X, y, target_windows=tw)
+
+    assert all(msn.degeneracy_report["using_window_stats"])
+    assert yn.std() > 0.1, f"alvo do backbone deveria ter escala util, std={yn.std():.2e}"
+    sens = _sensibilidade(msn, X, tw, 1)
+    assert sens > 0.1 * float(y.std()), f"a saida da rede deveria mover a previsao, sens={sens:.2e}"
+    print(f"OK  window_stats: std_alvo={yn.std():.3f}, sensibilidade={sens:.3f} "
+          f"(std do alvo real={float(y.std()):.3f})")
+
+
+def test_evomsn_policy_error_falha_alto():
+    X, y, tw = _evomsn_fixture(H=1)
+    msn = EvoMSNNormalizer(window_size=X.shape[1], horizon=1, n_features=X.shape[2],
+                           k_scales=3, short_horizon_policy="error")
+    try:
+        msn.fit(X, y, target_windows=tw)
+    except ValueError as e:
+        assert "menor que os per" in str(e)
+        print("OK  policy='error' recusa horizonte invalido")
+        return
+    raise AssertionError("deveria ter levantado ValueError")
+
+
+def test_evomsn_horizonte_longo_inalterado():
+    """H >= p: nenhuma escala degenera, a política não muda nada."""
+    L, H = 8, 8
+    X, y, tw = _evomsn_fixture(H=H, L=L, C=3, n=120)
+    out = {}
+    for pol in ("legacy", "window_stats"):
+        msn = EvoMSNNormalizer(window_size=L, horizon=H, n_features=X.shape[2],
+                               k_scales=2, short_horizon_policy=pol)
+        _, yn = msn.fit(X, y, target_windows=tw)
+        assert not any(msn.degeneracy_report["degenerate_scales"]), \
+            f"p={msn.meta.periods} nao deveria degenerar com H={H}"
+        out[pol] = yn
+    assert np.allclose(out["legacy"], out["window_stats"]), \
+        "sem degenerescencia as politicas devem coincidir"
+    print("OK  horizonte longo: politicas coincidem, nada muda")
+
+
+def test_evomsn_like_nao_mistura_canais():
+    """A variante 'like' usava media sobre todos os canais (volume com preco)."""
+    L, H, n = 24, 1, 120
+    close = 1000 + np.cumsum(RNG.normal(0, 5, n + L + H))
+    volume = RNG.uniform(1, 10, n + L + H)          # escala 1e0 vs preco 1e3
+    X = np.stack([np.stack([close[i:i + L], volume[i:i + L]], axis=1) for i in range(n)])
+    y = close[L:L + n].reshape(-1, 1)
+    tw = X[:, :, [0]]
+
+    msn = EvoMSNLikeNormalizer(window_size=L, horizon=H, n_features=2,
+                               target_idx=0, k_scales=2, short_horizon_policy="legacy")
+    msn.fit(X, y, target_windows=tw)
+    _, _, ctx = msn.transform(X, None, target_windows=tw)
+    phi = ctx["phi_hat_stack"]
+    # phi deve estar na escala do preco, nao puxado para baixo pelo volume
+    assert phi.mean() > 0.5 * close.mean(), \
+        f"phi={phi.mean():.1f} fora da escala do preco ({close.mean():.1f}) -> canais misturados"
+    print(f"OK  'like' usa o canal do alvo: phi={phi.mean():.1f} vs preco={close.mean():.1f}")
+
+
 if __name__ == "__main__":
-    for fn in [v for k, v in sorted(globals().items()) if k.startswith("test_")]:
+    fns = [v for k, v in sorted(globals().items())
+           if k.startswith("test_") and callable(v)]
+    for fn in fns:
         fn()
-    print("\nTodos os testes passaram.")
+    print(f"\n{len(fns)} testes passaram.")

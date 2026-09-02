@@ -268,8 +268,16 @@ class ModelService:
         ev_k   = int(norm.get("evomsn_k_scales", config.get("evomsn_k_scales", 4)))
         ev_agg = norm.get("evomsn_agg", "fft")            # "fft" | "uniform"
         ev_pred = norm.get("evomsn_predictor", config.get("evomsn_predictor", "linear"))  # "linear" | "mlp"
+        # H < periodo torna a dispersao do alvo indefinida; ver EvoMSNNormalizer
+        ev_short = norm.get(
+            "evomsn_short_horizon_policy",
+            config.get("evomsn_short_horizon_policy", "window_stats"),
+        )  # "window_stats" | "legacy" | "error"
 
-        return strategy, scaler_type, x_mode, y_mode, {"k_scales": ev_k, "agg": ev_agg, "predictor": ev_pred}
+        return strategy, scaler_type, x_mode, y_mode, {
+            "k_scales": ev_k, "agg": ev_agg, "predictor": ev_pred,
+            "short_horizon_policy": ev_short,
+        }
 
     # -------------------------
     # util: y_mode local exige o alvo dentro do X
@@ -633,6 +641,7 @@ class ModelService:
                         agg=str(evcfg.get("agg", "fft")),
                         random_state=seed,
                         predictor_type=str(evcfg.get("predictor", "linear")),
+                        short_horizon_policy=str(evcfg.get("short_horizon_policy", "window_stats")),
                     )
                 else:
                     msn = EvoMSNLikeNormalizer(
@@ -643,10 +652,15 @@ class ModelService:
                         k_scales=int(evcfg["k_scales"]),
                         agg=str(evcfg.get("agg", "fft")),
                         random_state=seed,
+                        short_horizon_policy=str(evcfg.get("short_horizon_policy", "window_stats")),
                     )
 
                 # treino MSN (períodos globais a partir de X_train)
-                X_train_scaled, y_train_scaled = msn.fit(X_train, y_train, save_path=scaler_dir)
+                X_train_scaled, y_train_scaled = msn.fit(
+                    X_train, y_train, save_path=scaler_dir, target_windows=tw_train
+                )
+                if msn.degeneracy_report:
+                    print(f"[EvoMSN] {msn.degeneracy_report}")
                 # obtenha ctx também para o CONJUNTO DE TREINO (para inversão das métricas)
                 _Xtr_tmp, _ytr_tmp, ctx_train_msn = msn.transform(X_train, None, target_windows=tw_train)
                 # validação e teste com pesos via janela do alvo
@@ -1068,7 +1082,8 @@ class ModelService:
                     msn = EvoMSNNormalizer(
                         window_size=window_size, horizon=steps_ahead, n_features=X_train.shape[2],
                         target_idx=0, k_scales=int(evcfg["k_scales"]), agg=str(evcfg.get("agg", "fft")),
-                        random_state=config.get("seed", 42), predictor_type=str(evcfg.get("predictor", "linear"))
+                        random_state=config.get("seed", 42), predictor_type=str(evcfg.get("predictor", "linear")),
+                        short_horizon_policy=str(evcfg.get("short_horizon_policy", "window_stats"))
                     )
                 else:
                     msn = EvoMSNLikeNormalizer(
@@ -1076,7 +1091,11 @@ class ModelService:
                         target_idx=0, k_scales=int(evcfg["k_scales"]), agg=str(evcfg.get("agg", "fft")),
                         random_state=config.get("seed", 42)
                     )
-                X_train_scaled, y_train_scaled = msn.fit(X_train, y_train, save_path=scaler_dir)
+                X_train_scaled, y_train_scaled = msn.fit(
+                    X_train, y_train, save_path=scaler_dir, target_windows=tw_train
+                )
+                if msn.degeneracy_report:
+                    logger.info(f"[FINETUNE][EvoMSN] {msn.degeneracy_report}")
                 _Xtr_tmp, _ytr_tmp, ctx_train_msn = msn.transform(X_train, None, target_windows=tw_train)
                 X_val_scaled, y_val_scaled, _ctx_val = msn.transform(X_val, y_val, target_windows=tw_val)
                 X_test_scaled, _y_dummy, ctx_test = msn.transform(X_test, None, target_windows=tw_test)

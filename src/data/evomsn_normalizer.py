@@ -1,7 +1,7 @@
 # data/evomsn_normalizer.py
 from __future__ import annotations
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Tuple, List, Optional
 
 import joblib
@@ -25,6 +25,10 @@ class EvoMSNMeta:
     # preditores por escala i: ϕ̂ = f_ωi(μ_x), ξ̂ = f_θi(σ_x)
     phi_predictors: List[Optional[object]]
     xi_predictors: List[Optional[object]]
+    # escalas em que as estatísticas do alvo são indefinidas para o horizonte
+    # adotado (H < p) e por isso usam as estatísticas da janela de entrada
+    scale_window_stats: List[bool] = field(default_factory=list)
+    short_horizon_policy: str = "legacy"
 
 
 class EvoMSNNormalizer:
@@ -37,6 +41,31 @@ class EvoMSNNormalizer:
     - Predição ϕ̂(μ) e ξ̂(σ) com preditor configurável ("linear" ou "mlp").
     - Normalização por fatia → backbone → denormalização por ϕ̂,ξ̂.
     - Ensemble adaptativo com pesos por amplitude local nas freq. globais.
+
+    Horizonte curto (H < p)
+    -----------------------
+    As estatísticas ϕ,ξ do alvo são calculadas por fatia de y. Quando o horizonte
+    é menor que o período, a fatia é preenchida por replicação do último valor;
+    com H = 1 ela vira um vetor constante, cujo desvio padrão é exatamente zero.
+    Nesse regime:
+
+      • o alvo do backbone, (Ys - ϕ)/(ξ + ε), é identicamente zero;
+      • o regressor de ξ̂ é ajustado sobre zeros e devolve ~1e-13;
+      • em ŷ = ỹ·(ξ̂ + ε) + ϕ̂, a saída da rede é multiplicada por ~ε e desaparece.
+
+    O resultado é que a previsão vira ϕ̂ puro — uma regressão do nível a partir das
+    médias das fatias — e o modelo de sequência fica inoperante. É por isso que
+    LSTM e Transformer produzem previsões idênticas nessa configuração.
+
+    `short_horizon_policy` controla o comportamento:
+      • "window_stats" (padrão): nas escalas com H < p, usa as estatísticas da
+        ÚLTIMA fatia da janela do alvo como referência de normalização. São
+        causais, bem definidas e computáveis na inferência — o que dispensa o
+        preditor estatístico nessas escalas e devolve à rede sua contribuição.
+        Afasta-se de (QIN et al., 2024), que pressupõe H ≥ p.
+      • "legacy": mantém o comportamento degenerado, para reproduzir resultados
+        já publicados.
+      • "error": levanta exceção, para não rodar em silêncio um regime inválido.
     """
 
     def __init__(
@@ -51,6 +80,7 @@ class EvoMSNNormalizer:
         random_state: int = 42,
         predictor_type: str = "linear",
         hidden: tuple[int, int] = (128, 64),
+        short_horizon_policy: str = "window_stats",
     ):
         self.L = int(window_size)
         self.H = int(horizon)
@@ -64,7 +94,12 @@ class EvoMSNNormalizer:
         self.hidden = tuple(hidden)
         self.predictor_type = predictor_type.lower()
         assert self.predictor_type in ("linear", "mlp"), "predictor_type deve ser 'linear' ou 'mlp'."
+        self.short_horizon_policy = str(short_horizon_policy).lower()
+        assert self.short_horizon_policy in ("window_stats", "legacy", "error"), (
+            "short_horizon_policy deve ser 'window_stats', 'legacy' ou 'error'."
+        )
         self.meta: Optional[EvoMSNMeta] = None
+        self.degeneracy_report: Dict[str, object] = {}
 
     # ---------------------- seleção de períodos (FFT global) ----------------------
     def _select_periods_fft_global(self, X_train: np.ndarray, k: int) -> Tuple[List[int], List[int]]:
@@ -130,6 +165,44 @@ class EvoMSNNormalizer:
     # ---------------------- normalização por fatia ----------------------
     def _norm_X(self, Xs: np.ndarray, mu: np.ndarray, std: np.ndarray) -> np.ndarray:
         return (Xs - mu) / (std + self.eps)
+
+    # ---------------------- horizonte curto ----------------------
+    def _is_degenerate_scale(self, p: int) -> bool:
+        """
+        A fatia do alvo só tem conteúdo real quando o horizonte cobre o período.
+        Com H < p o preenchimento (replicação do último valor) domina a fatia;
+        com H = 1 ela é constante e o desvio padrão é exatamente zero.
+        """
+        return self.H < p
+
+    def _resolve_target_windows(
+        self, X: np.ndarray, target_windows: Optional[np.ndarray]
+    ) -> np.ndarray:
+        """Janela histórica do alvo (N, L). Cai para o canal `target_idx` de X."""
+        if target_windows is None:
+            tw = X[:, :, self.target_idx]
+        else:
+            tw = np.asarray(target_windows, dtype=float)
+            if tw.ndim == 3:
+                tw = tw[:, :, 0] if tw.shape[2] == 1 else tw[:, :, self.target_idx]
+        if tw.ndim != 2 or tw.shape[0] != X.shape[0] or tw.shape[1] != self.L:
+            raise ValueError(
+                f"target_windows incompatível: esperado ({X.shape[0]},{self.L}), recebido {tw.shape}."
+            )
+        return tw
+
+    def _window_ref_stats(self, tw: np.ndarray, p: int) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Estatísticas da ÚLTIMA fatia de tamanho p da janela do alvo.
+        Causais e bem definidas — não dependem do futuro. Shapes (N,S,1).
+        """
+        seg = tw[:, -p:] if p <= tw.shape[1] else tw
+        phi = seg.mean(axis=1)
+        xi = seg.std(axis=1)
+        S = int(np.ceil(self.H / p))
+        phi = np.repeat(phi[:, None], S, axis=1)[:, :, None]
+        xi = np.repeat(xi[:, None], S, axis=1)[:, :, None]
+        return phi, np.maximum(xi, 0.0)
 
     # ---------------------- preditores de estatística ----------------------
     def _make_predictor(self):
@@ -216,32 +289,75 @@ class EvoMSNNormalizer:
         self,
         X_train: np.ndarray,      # (N, L, C)
         y_train: np.ndarray,      # (N, H)
-        save_path: Optional[str] = None
+        save_path: Optional[str] = None,
+        target_windows: Optional[np.ndarray] = None,   # (N,L,1) ou (N,L)
     ) -> Tuple[np.ndarray, np.ndarray]:
         assert X_train.ndim == 3 and X_train.shape[1] == self.L
         assert y_train.ndim == 2 and y_train.shape[1] == self.H
 
         periods, freq_idxs = self._select_periods_fft_global(X_train, self.k)
+        tw = self._resolve_target_windows(X_train, target_windows)
+
+        degenerate = [self._is_degenerate_scale(p) for p in periods]
+        if any(degenerate) and self.short_horizon_policy == "error":
+            bad = [p for p, g in zip(periods, degenerate) if g]
+            raise ValueError(
+                f"Horizonte H={self.H} é menor que os períodos {bad}: a dispersão do alvo "
+                f"por fatia é indefinida e a saída da rede seria anulada na desnormalização. "
+                f"Use short_horizon_policy='window_stats' ou aumente steps_ahead."
+            )
+
+        use_window = [
+            g and self.short_horizon_policy == "window_stats" for g in degenerate
+        ]
 
         phi_regs, xi_regs = [], []
         X_concat, y_concat = [], []
+        target_std = []
 
-        for p in periods:
+        for p, win in zip(periods, use_window):
             Xs, _ = self._slice_X(X_train, p)       # (N,J,p,C)
             Ys, _ = self._slice_y(y_train, p)       # (N,S,p)
-
-            phi_reg, xi_reg = self._fit_stat_predictors(Xs, Ys)
-            phi_regs.append(phi_reg)
-            xi_regs.append(xi_reg)
 
             mu, std = self._stats_X(Xs)
             Xn = self._norm_X(Xs, mu, std).reshape(Xs.shape[0], -1, self.C)[:, :self.L, :]
 
-            phi_true, xi_true = self._stats_y(Ys)
-            Yn = ((Ys - phi_true) / (xi_true + self.eps)).reshape(Ys.shape[0], -1)[:, :self.H]
+            if win:
+                # Estatísticas da última fatia da janela do alvo: causais, bem
+                # definidas e reproduzíveis na inferência -> dispensa preditor.
+                phi_ref, xi_ref = self._window_ref_stats(tw, p)          # (N,S,1)
+                phi_t = np.repeat(phi_ref, p, axis=2).reshape(Ys.shape[0], -1)[:, :self.H]
+                xi_t  = np.repeat(xi_ref,  p, axis=2).reshape(Ys.shape[0], -1)[:, :self.H]
+                Yn = (y_train - phi_t) / (xi_t + self.eps)
+                phi_regs.append(None)
+                xi_regs.append(None)
+            else:
+                phi_reg, xi_reg = self._fit_stat_predictors(Xs, Ys)
+                phi_regs.append(phi_reg)
+                xi_regs.append(xi_reg)
+                phi_true, xi_true = self._stats_y(Ys)
+                Yn = ((Ys - phi_true) / (xi_true + self.eps)).reshape(Ys.shape[0], -1)[:, :self.H]
 
+            target_std.append(float(np.std(Yn)))
             X_concat.append(Xn)
             y_concat.append(Yn)
+
+        self.degeneracy_report = {
+            "horizon": self.H,
+            "periods": list(periods),
+            "degenerate_scales": degenerate,
+            "policy": self.short_horizon_policy,
+            "using_window_stats": use_window,
+            "backbone_target_std_per_scale": target_std,
+        }
+        if any(degenerate) and self.short_horizon_policy == "legacy":
+            print(
+                "[EvoMSN][AVISO] H=%d < periodos %s. O alvo do backbone e' ~constante "
+                "(std por escala: %s) e a saida da rede sera anulada na desnormalizacao. "
+                "Modo 'legacy' ativo: reproduz o comportamento degenerado."
+                % (self.H, [p for p, g in zip(periods, degenerate) if g],
+                   [f"{s:.2e}" for s in target_std])
+            )
 
         X_train_msn = np.concatenate(X_concat, axis=0)
         y_train_msn = np.concatenate(y_concat, axis=0)
@@ -259,6 +375,8 @@ class EvoMSNNormalizer:
             predictor_type=self.predictor_type,   # <--- persiste
             phi_predictors=phi_regs,
             xi_predictors=xi_regs,
+            scale_window_stats=list(use_window),
+            short_horizon_policy=self.short_horizon_policy,
         )
 
         if save_path:
@@ -280,10 +398,15 @@ class EvoMSNNormalizer:
         X_stack, y_stack = [], []
         ctx = {"phi_hat_stack": [], "xi_hat_stack": [], "weights_stack": [], "k": len(periods)}
 
+        tw2d = self._resolve_target_windows(X, target_windows)
         if target_windows is None:
             target_windows = X[:, :, [self.target_idx]]
         w = self._weights_for_periods(target_windows, freq_idxs) if self.meta.agg == "fft" \
             else np.ones((X.shape[0], len(periods)), dtype=float) / len(periods)
+
+        scale_window_stats = list(getattr(self.meta, "scale_window_stats", []) or [])
+        if len(scale_window_stats) != len(periods):
+            scale_window_stats = [False] * len(periods)
 
         for i, p in enumerate(periods):
             Xs, _ = self._slice_X(X, p)                 # (N,J,p,C)
@@ -291,7 +414,13 @@ class EvoMSNNormalizer:
             Xn = self._norm_X(Xs, mu, std).reshape(Xs.shape[0], -1, self.C)[:, :self.L, :]
             X_stack.append(Xn)
 
-            phi_hat, xi_hat = self._predict_future_stats(Xs, self.meta.phi_predictors[i], self.meta.xi_predictors[i])
+            if scale_window_stats[i]:
+                # mesma referência causal usada no fit — nada é predito aqui
+                phi_hat, xi_hat = self._window_ref_stats(tw2d, p)
+            else:
+                phi_hat, xi_hat = self._predict_future_stats(
+                    Xs, self.meta.phi_predictors[i], self.meta.xi_predictors[i]
+                )
             phi_time = np.repeat(phi_hat, p, axis=2).reshape(X.shape[0], -1)[:, :self.H]
             xi_time  = np.repeat(xi_hat,  p, axis=2).reshape(X.shape[0], -1)[:, :self.H]
 
@@ -299,9 +428,12 @@ class EvoMSNNormalizer:
             ctx["xi_hat_stack"].append(xi_time)
 
             if y is not None:
-                Ys, _ = self._slice_y(y, p)
-                phi_true, xi_true = self._stats_y(Ys)
-                Yn = ((Ys - phi_true) / (xi_true + self.eps)).reshape(Ys.shape[0], -1)[:, :self.H]
+                if scale_window_stats[i]:
+                    Yn = (y - phi_time) / (xi_time + self.eps)
+                else:
+                    Ys, _ = self._slice_y(y, p)
+                    phi_true, xi_true = self._stats_y(Ys)
+                    Yn = ((Ys - phi_true) / (xi_true + self.eps)).reshape(Ys.shape[0], -1)[:, :self.H]
                 y_stack.append(Yn)
 
         X_out = np.concatenate(X_stack, axis=0)  # (N*k, L, C)
@@ -338,9 +470,13 @@ class EvoMSNNormalizer:
     @staticmethod
     def load(meta_dir: str) -> EvoMSNMeta:
         meta = joblib.load(os.path.join(meta_dir, "evomsn_meta.pkl"))
-        # compatibilidade com metas antigos (sem predictor_type)
+        # compatibilidade com metas antigos
         if not hasattr(meta, "predictor_type"):
             meta.predictor_type = "linear"
+        if not hasattr(meta, "scale_window_stats") or meta.scale_window_stats is None:
+            meta.scale_window_stats = [False] * len(meta.periods)
+        if not hasattr(meta, "short_horizon_policy"):
+            meta.short_horizon_policy = "legacy"
         return meta
 
     @staticmethod
@@ -357,7 +493,10 @@ class EvoMSNLikeNormalizer(EvoMSNNormalizer):
         return None, None
 
     def _predict_future_stats(self, Xs: np.ndarray, phi_reg: object, xi_reg: object) -> Tuple[np.ndarray, np.ndarray]:
-        mu, std = self._stats_X(Xs)                # (N,J,1,C)
-        last_mu = mu[:, -1:, :, :].mean(axis=3)    # (N,1,1)
-        last_std = std[:, -1:, :, :].mean(axis=3)  # (N,1,1)
+        # BUGFIX: a versão anterior fazia média sobre TODOS os canais, misturando
+        # volume (~1e0) com preço (~1e4). Usa-se o canal do alvo.
+        mu, std = self._stats_X(Xs)                          # (N,J,1,C)
+        c = self.target_idx if self.target_idx < Xs.shape[3] else 0
+        last_mu = mu[:, -1:, :, c]                           # (N,1,1)
+        last_std = std[:, -1:, :, c]                         # (N,1,1)
         return last_mu, np.maximum(last_std, 0.0)

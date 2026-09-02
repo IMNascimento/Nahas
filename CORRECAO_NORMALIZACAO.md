@@ -140,3 +140,73 @@ Resultados anteriores continuam reproduzíveis:
 ```json
 { "include_target_channel": "legacy", "embargo": 0 }
 ```
+
+---
+
+# Correção da degenerescência multi-escala sob horizonte unitário
+
+A variante multi-escala (`evomsn` / `evomsn_like`) não estava apenas imprecisa:
+**o backbone era inoperante.** A Seção 5.3 da dissertação já documenta o
+diagnóstico; esta parte corrige a implementação.
+
+## O mecanismo
+
+As estatísticas ϕ, ξ do alvo são calculadas por fatia de `y`. Com `H = 1`, o
+preenchimento replica o único valor até completar o período, então a fatia é um
+vetor constante:
+
+- `xi_true = std(vetor constante) = 0` exatamente;
+- o alvo do backbone, `(Ys - phi)/(xi + eps)`, é **identicamente zero**;
+- o regressor de ξ̂ é ajustado sobre zeros e devolve ~1e-14;
+- em `y = ỹ·(ξ̂ + ε) + ϕ̂`, a saída da rede é multiplicada por ~ε e some.
+
+Medido no repositório (`H=1`, `L=96`, períodos `[96, 48, 24]`):
+
+| | `legacy` | `window_stats` |
+|---|---|---|
+| desvio padrão do alvo do backbone | 1,3e-06 | 1,26 |
+| ξ̂ mediano | 5,1e-15 | 2,19 |
+| efeito de somar 1 à saída da rede | 1,0e-08 | 2,63 |
+| (desvio padrão do alvo real) | 5,19 | 5,19 |
+
+Em `legacy`, mudar a saída da rede em um desvio padrão altera a previsão em
+1e-08, contra um alvo de escala 5,19 — oito ordens de grandeza abaixo. A previsão
+é ϕ̂ puro. É por isso que LSTM e Transformer davam resultados idênticos.
+
+## `short_horizon_policy`
+
+Nova opção de `EvoMSNNormalizer`, exposta em
+`normalization.evomsn_short_horizon_policy`:
+
+- **`"window_stats"` (padrão)** — nas escalas em que `H < p`, usa as estatísticas
+  da última fatia da janela do alvo como referência de normalização. São causais,
+  bem definidas e computáveis na inferência, o que dispensa o preditor
+  estatístico nessas escalas e devolve à rede sua contribuição. **Afasta-se de
+  (QIN et al., 2024), que pressupõe `H ≥ p`** — deve ser descrito como adaptação,
+  não como reprodução.
+- **`"legacy"`** — mantém o comportamento degenerado, com aviso em log.
+  Reproduz os números publicados.
+- **`"error"`** — recusa a execução, para não rodar em silêncio um regime inválido.
+
+Quando `H ≥ p` nenhuma escala degenera e as políticas coincidem exatamente
+(verificado em teste).
+
+## Outras correções
+
+- `EvoMSNNormalizer.fit(..., target_windows=...)` — as estatísticas do alvo vêm
+  da janela do alvo, não de um canal arbitrário de `X`.
+- `degeneracy_report` — exposto após o `fit` e registrado em log: períodos,
+  quais escalas degeneram, política ativa e desvio padrão do alvo por escala.
+- **Bugfix em `EvoMSNLikeNormalizer`**: `_predict_future_stats` fazia média sobre
+  **todos os canais**, misturando volume (~1e0) com preço (~1e4). Passa a usar o
+  canal do alvo.
+- `EvoMSNMeta` ganhou campos com default e `load()` tolera metas antigos.
+
+## O que isso significa para a dissertação
+
+A Seção 5.3 continua correta e não precisa ser reescrita — ela descreve o
+comportamento da implementação avaliada. O que muda é que agora existe uma
+correção, e vale acrescentar que a família multi-escala pode ser reavaliada sob
+`window_stats`, separando "o método não serve para horizonte curto" de "a
+implementação anulava o backbone". São afirmações diferentes, e a segunda é a que
+os números atuais sustentam.
