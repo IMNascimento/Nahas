@@ -210,3 +210,27 @@ correção, e vale acrescentar que a família multi-escala pode ser reavaliada s
 `window_stats`, separando "o método não serve para horizonte curto" de "a
 implementação anulava o backbone". São afirmações diferentes, e a segunda é a que
 os números atuais sustentam.
+
+---
+
+# Como rodar a matriz do confundimento
+
+```bash
+cd src
+# 1) confira os configs sem tocar no banco
+./venv/bin/python experiments/run_confound_matrix.py \
+    --base-config results/train/b0d13639/hiperparams/config_BTCUSDT_1h_USDT_BIN_b0d13639.json \
+    --dry-run
+
+# 2) rode (exige banco acessivel)
+./venv/bin/python experiments/run_confound_matrix.py \
+    --base-config results/train/b0d13639/hiperparams/config_BTCUSDT_1h_USDT_BIN_b0d13639.json \
+    --framework keras --model-type lstm --seeds 1
+```
+
+Saída: tabela com RMSE, R², RMSE da persistência, excesso percentual, estatística
+DM e `corr_returns` por braço, mais a leitura direta de **quanto da distância
+entre global e local é fechada apenas por acrescentar o canal do alvo ao global**.
+
+Todo treino passa a reportar os baselines automaticamente — em log e no
+`metrics.json`, sob as chaves `baselines` e `setup`.

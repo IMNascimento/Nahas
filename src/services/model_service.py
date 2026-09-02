@@ -19,6 +19,7 @@ from services.binance import BinanceData
 from utils.db_utils import ensure_db_connection
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from data.evomsn_normalizer import EvoMSNNormalizer, EvoMSNLikeNormalizer
+from utils.baselines import evaluate_against_baselines
 
 import concurrent.futures
 from typing import Any, Dict, List, Tuple
@@ -325,17 +326,6 @@ class ModelService:
         for i in range(n):
             tw[i, :, 0] = target_series[i:i + window_size]
         return tw
-
-    # split timestamps na mesma lógica do split_data
-    @staticmethod
-    def _split_timestamps(ts_all: np.ndarray, train_size: float, val_size: float):
-        n_total = len(ts_all)
-        n_train = int(n_total * train_size)
-        n_val = int(n_total * val_size)
-        ts_train = ts_all[:n_train]
-        ts_val = ts_all[n_train:n_train + n_val]
-        ts_test = ts_all[n_train + n_val:]
-        return ts_train, ts_val, ts_test
 
 
     # -------------------------
@@ -768,10 +758,54 @@ class ModelService:
             "R2 score - Train data": metrics_train["r2"],
             "R2 score - Test data": metrics_test["r2"],
         }
+        # --- baselines ingenuos e diagnostico de mimetismo (sempre reportados) ---
+        baseline_report = None
+        try:
+            n_eval = y_pred_test.shape[0]
+            tw_eval = np.asarray(tw_test)[-n_eval:]
+
+            inv_fn = None
+            if inverse_kind == "local":
+                inv_fn = lambda a: processor.inverse_transform_local(a, inverse_ctx_test)
+            elif inverse_kind == "global":
+                inv_fn = processor.inverse_transform_global
+
+            baseline_report = evaluate_against_baselines(
+                y_true=y_test_orig,
+                y_pred=y_pred_test,
+                target_windows=tw_eval,
+                steps_ahead=int(n_steps),
+                inverse_fn=inv_fn,
+            )
+            s = baseline_report["summary"]
+            m = baseline_report["mimicry"]
+            dm = baseline_report["dm_model_vs_persistence"]
+            print(
+                f"[BASELINE] RMSE modelo={baseline_report['model']['rmse']:.4f} | "
+                f"persistencia={baseline_report['persistence']['rmse']:.4f} | "
+                f"excesso={s['excess_rmse_over_persistence_pct']:+.2f}% | "
+                f"DM={dm['dm_stat']:.2f} (p={dm['p_value']:.3g}) | "
+                f"corr_returns={m['corr_returns']:.4f} | "
+                f"acc_direcional={m['directional_accuracy']:.4f}"
+            )
+        except Exception as e:  # diagnostico nunca deve derrubar o treino
+            print(f"[BASELINE][ERRO] nao foi possivel calcular baselines: {e}")
+
         metrics_bundle = {
             "train": metrics_train,
             "test": metrics_test,
             "readable": metrics_readable,
+            "baselines": baseline_report,
+            "setup": {
+                "normalization_strategy": norm_strategy,
+                "x_mode": x_mode,
+                "y_mode": y_mode,
+                "include_target_channel": config.get("include_target_channel", "equalized"),
+                "target_channel_in_X": bool(append_target),
+                "n_channels": int(X_train.shape[2]),
+                "embargo": int(embargo),
+                "steps_ahead": int(steps_ahead),
+            },
             "n_steps": int(n_steps),
             "window_size": int(window_size),
             "run_id": hash_id,
