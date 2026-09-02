@@ -41,7 +41,8 @@ class DataProcessor:
 
         - Modos suportados para X: "zscore" | "minmax" | "robust"
         - Modos suportados para y: "none" | "relative_last" | "zscore_target" | "minmax_target" | "robust_target"
-          * Os modos de y que contêm "target" **exigem** que a feature-alvo esteja dentro de X (via `target_idx`).
+          * Os modos de y que dependem do alvo aceitam `target_windows=(n, window, 1)`.
+            Sem ele, caem no fallback `X[:, :, target_idx]`, que exige a feature-alvo dentro de X.
 
     • Timestamps:
         - Use `window_timestamps(...)` para alinhar corretamente um timestamp por amostra,
@@ -213,32 +214,75 @@ class DataProcessor:
     # ======================
     # SPLIT TEMPORAL
     # ======================
+    def split_indices(
+        self,
+        n_total: int,
+        train_size: float = 0.7,
+        validation_size: float = 0.15,
+        embargo: int = 0
+    ) -> Dict[str, slice]:
+        """
+        Calcula as fatias temporais de treino/validação/teste, com embargo entre segmentos.
+
+        Por que embargo
+        ---------------
+        O split é feito DEPOIS do janelamento, então a última janela de treino e as
+        primeiras janelas de validação compartilham até `window_size - 1` barras de
+        entrada. Descartar `embargo` amostras no fim de cada segmento elimina essa
+        sobreposição. Use `embargo = window_size + steps_ahead - 1` para independência
+        completa; `embargo=0` reproduz o comportamento anterior.
+
+        Retorna um dict com as fatias {'train', 'val', 'test'}, aplicáveis
+        identicamente a X, y, timestamps e janelas do alvo.
+        """
+        DataValidator.validate_float(train_size, min_value=0.0, max_value=1.0)
+        DataValidator.validate_float(validation_size, min_value=0.0, max_value=1.0)
+        DataValidator.validate_integer(int(embargo), min_value=0)
+
+        emb = int(embargo)
+        n_train = int(n_total * train_size)
+        n_val = int(n_total * validation_size)
+
+        train_end = max(0, n_train - emb)
+        val_start = n_train
+        val_end = max(val_start, n_train + n_val - emb)
+        test_start = n_train + n_val
+
+        if train_end <= 0 or val_end <= val_start or test_start >= n_total:
+            raise ValueError(
+                f"Embargo={emb} deixa algum segmento vazio "
+                f"(n_total={n_total}, train={train_end}, val={val_end - val_start})."
+            )
+
+        return {
+            "train": slice(0, train_end),
+            "val": slice(val_start, val_end),
+            "test": slice(test_start, n_total),
+        }
+
     def split_data(
         self,
         X: np.ndarray,
         y: np.ndarray,
         train_size: float = 0.7,
-        validation_size: float = 0.15
+        validation_size: float = 0.15,
+        embargo: int = 0
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Divide X e y em conjuntos de treino, validação e teste, preservando a ordem temporal.
+
+        `embargo` descarta amostras no fim do treino e da validação para eliminar a
+        sobreposição de janelas entre segmentos (ver `split_indices`). O padrão 0
+        mantém o comportamento histórico.
         """
-        DataValidator.validate_float(train_size, min_value=0.0, max_value=1.0)
-        DataValidator.validate_float(validation_size, min_value=0.0, max_value=1.0)
+        sl = self.split_indices(len(X), train_size, validation_size, embargo)
 
-        n_total = len(X)
-        n_train = int(n_total * train_size)
-        n_val = int(n_total * validation_size)
-        # n_test = n_total - n_train - n_val  # (apenas para leitura)
+        X_train, y_train = X[sl["train"]], y[sl["train"]]
+        X_val,   y_val   = X[sl["val"]],   y[sl["val"]]
+        X_test,  y_test  = X[sl["test"]],  y[sl["test"]]
 
-        X_train = X[:n_train]
-        y_train = y[:n_train]
-        X_val = X[n_train:n_train + n_val]
-        y_val = y[n_train:n_train + n_val]
-        X_test = X[n_train + n_val:]
-        y_test = y[n_train + n_val:]
-
-        print(f"[DEBUG] Split: train={X_train.shape}, val={X_val.shape}, test={X_test.shape}")
+        print(f"[DEBUG] Split (embargo={embargo}): train={X_train.shape}, "
+              f"val={X_val.shape}, test={X_test.shape}")
         return X_train, X_val, X_test, y_train, y_val, y_test
 
     # ======================
@@ -293,14 +337,24 @@ class DataProcessor:
         y_mode: str = "relative_last",          # "none" | "zscore_target" | "minmax_target" | "robust_target" | "relative_last"
         target_idx: int = 0,
         eps: float = 1e-8,
+        target_windows: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
         """
         Normaliza por janela (amostra-a-amostra). Não usa os scalers globais.
 
-        IMPORTANTE:
-          • Se y_mode ∈ {"relative_last","*_target"}, a feature-alvo PRECISA estar em X
-            (no índice `target_idx`). Caso o seu X NÃO inclua o alvo (ex.: você o removeu
-            das features), troque para y_mode="none" ou insira o alvo nas features.
+        Fonte das estatísticas de y
+        ---------------------------
+        Os modos {"relative_last", "*_target"} precisam da janela histórica do ALVO.
+        Ela pode vir de dois lugares:
+
+          • `target_windows` (n, window, 1) ou (n, window) — RECOMENDADO. Desacopla
+            "o que normaliza y" de "o que o modelo enxerga em X", permitindo comparar
+            estratégias de normalização com o MESMO conjunto de features.
+          • `X[:, :, target_idx]` — usado apenas quando `target_windows` é None, o que
+            EXIGE que a feature-alvo esteja dentro de X.
+
+        Quando `target_windows` é exatamente o canal `target_idx` de X, os dois caminhos
+        produzem resultados idênticos.
         """
         DataValidator.validate_list(list(X.shape), item_type=int, min_length=3)
         DataValidator.validate_list(list(y.shape), item_type=int, min_length=2)
@@ -325,22 +379,43 @@ class DataProcessor:
         else:
             raise ValueError(f"x_mode inválido: {x_mode}")
 
-        # --- y local (com base no alvo dentro da janela) ---
+        # --- fonte das estatísticas de y ---
+        ywin_src = None
+        if y_mode != "none":
+            if target_windows is not None:
+                tw = np.asarray(target_windows, dtype=float)
+                if tw.ndim == 3:
+                    if tw.shape[2] != 1:
+                        raise ValueError("target_windows 3D deve ter exatamente 1 canal (n, window, 1).")
+                    tw = tw[:, :, 0]
+                if tw.ndim != 2 or tw.shape[0] != n or tw.shape[1] != ws:
+                    raise ValueError(
+                        f"target_windows com shape incompatível: esperado ({n},{ws}) ou ({n},{ws},1), recebido {np.asarray(target_windows).shape}."
+                    )
+                ywin_src = tw
+                y_stats_from = "target_windows"
+            else:
+                if target_idx < 0 or target_idx >= nf:
+                    raise ValueError(
+                        f"Para y_mode='{y_mode}' sem `target_windows`, o target_idx deve apontar "
+                        f"para a feature alvo dentro de X (nf={nf})."
+                    )
+                ywin_src = X[:, :, target_idx]                     # (n,window)
+                y_stats_from = "X[:, :, target_idx]"
+
+        # --- y local (com base na janela histórica do alvo) ---
         if y_mode == "none":
             yn = y.copy()
             y_ctx = {"y_mode": "none"}
 
         elif y_mode == "relative_last":
-            if target_idx < 0 or target_idx >= nf:
-                raise ValueError("Para y_mode='relative_last', o target_idx deve apontar para a feature alvo dentro de X.")
-            ref = X[:, -1, [target_idx]]                          # (n,1)
+            ref = ywin_src[:, [-1]]                                # (n,1)
             yn  = (y - ref) / (np.abs(ref) + eps)
-            y_ctx = {"y_mode": "relative_last", "y_ref_last": ref, "eps": eps}
+            y_ctx = {"y_mode": "relative_last", "y_ref_last": ref, "eps": eps,
+                     "y_stats_from": y_stats_from}
 
         elif y_mode in ("zscore_target", "minmax_target", "robust_target"):
-            if target_idx < 0 or target_idx >= nf:
-                raise ValueError(f"Para y_mode='{y_mode}', o target_idx deve apontar para a feature alvo dentro de X.")
-            ywin = X[:, :, target_idx]                             # (n,window)
+            ywin = ywin_src                                        # (n,window)
             if y_mode == "zscore_target":
                 center = ywin.mean(axis=1, keepdims=True)
                 scale  = ywin.std(axis=1, keepdims=True)
@@ -355,7 +430,8 @@ class DataProcessor:
                 center = np.median(ywin, axis=1, keepdims=True)
                 scale  = (q3 - q1)
             yn = (y - center) / (scale + eps)
-            y_ctx = {"y_mode": y_mode, "y_center": center, "y_scale": scale, "eps": eps}
+            y_ctx = {"y_mode": y_mode, "y_center": center, "y_scale": scale, "eps": eps,
+                     "y_stats_from": y_stats_from}
 
         else:
             raise ValueError(f"y_mode inválido: {y_mode}")

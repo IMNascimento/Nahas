@@ -278,6 +278,35 @@ class ModelService:
     def _y_mode_needs_target_in_X(y_mode: str) -> bool:
         return y_mode in ("relative_last", "zscore_target", "minmax_target", "robust_target")
 
+    @staticmethod
+    def _resolve_include_target_channel(mode, *, norm_strategy: str, y_mode: str) -> bool:
+        """
+        Decide se a janela histórica do alvo entra em X como canal extra.
+
+        Valores aceitos em `include_target_channel`:
+          • "equalized" (padrão) / True  -> SEMPRE inclui, em todas as estratégias.
+            É o que torna global, local e evomsn comparáveis: mesma entrada, só muda
+            a normalização.
+          • "never" / False              -> NUNCA inclui. Útil para isolar o efeito da
+            normalização sem dar ao modelo a própria série do alvo.
+          • "legacy"                     -> reproduz o comportamento anterior (inclui
+            apenas em `local` com y_mode dependente do alvo). Mantido para reproduzir
+            os resultados já publicados.
+        """
+        if isinstance(mode, bool):
+            return mode
+        m = str(mode).strip().lower()
+        if m in ("equalized", "always", "true", "1", "yes"):
+            return True
+        if m in ("never", "false", "0", "no"):
+            return False
+        if m == "legacy":
+            return norm_strategy == "local" and ModelService._y_mode_needs_target_in_X(y_mode)
+        raise ValueError(
+            f"include_target_channel inválido: {mode!r}. "
+            "Use 'equalized', 'never' ou 'legacy'."
+        )
+
     # constrói janelas do alvo para concatenar como último canal do X
     @staticmethod
     def _build_target_windows(target_series: np.ndarray, window_size: int, steps_ahead: int) -> np.ndarray:
@@ -515,27 +544,49 @@ class ModelService:
                 timestamp_col="timestamp", ts_mode="horizon"
             )
 
-            # Para estratégias que precisam do alvo no X (local com certos y_mode)
-            if norm_strategy == "local" and self._y_mode_needs_target_in_X(y_mode):
-                target_series = data_df[target_col].values
-                tw_all = self._build_target_windows(target_series, window_size, steps_ahead)  # (n, L, 1)
-                X_all = np.concatenate([X_all, tw_all], axis=2)
-            else:
-                # usado pelo EvoMSN (pesos do ensemble via janela do alvo)
-                tw_all = self._build_target_windows(data_df[target_col].values, window_size, steps_ahead)
+            # janelas históricas do alvo — sempre construídas, alinhadas 1-para-1 com X_all
+            tw_all = self._build_target_windows(data_df[target_col].values, window_size, steps_ahead)
 
-            # split
-            X_train, X_val, X_test, y_train, y_val, y_test = processor.split_data(
-                X_all, y_all,
+            # ---------------------------------------------------------------
+            # Canal do alvo em X: mantém as estratégias COMPARÁVEIS.
+            # Antes, o alvo era concatenado em X apenas no braço "local" com
+            # y_mode dependente do alvo, enquanto "global" e "evomsn" ficavam
+            # sem ele. Isso confunde o efeito da normalização com o efeito de
+            # ter a própria série do alvo como feature — justamente o canal que
+            # torna a persistência trivialmente expressável.
+            # ---------------------------------------------------------------
+            append_target = self._resolve_include_target_channel(
+                config.get("include_target_channel", "equalized"),
+                norm_strategy=norm_strategy,
+                y_mode=y_mode,
+            )
+            if append_target:
+                X_all = np.concatenate([X_all, tw_all], axis=2)
+
+            # embargo entre segmentos (o split ocorre depois do janelamento)
+            embargo = config.get("embargo", None)
+            if embargo is None:
+                legacy = str(config.get("include_target_channel", "equalized")).lower() == "legacy"
+                embargo = 0 if legacy else (window_size + steps_ahead - 1)
+            embargo = int(embargo)
+
+            print(f"[SETUP] estrategia={norm_strategy} | canal_do_alvo_em_X={append_target} "
+                  f"| canais={X_all.shape[2]} | embargo={embargo}")
+
+            # split — mesmas fatias para X, y, timestamps e janelas do alvo
+            sl = processor.split_indices(
+                len(X_all),
                 train_size=float(config.get("train_size", 0.7)),
-                validation_size=float(config.get("validation_split", 0.15))
+                validation_size=float(config.get("validation_split", 0.15)),
+                embargo=embargo,
             )
-            ts_train, ts_val, ts_test = self._split_timestamps(
-                ts_all, float(config.get("train_size", 0.7)), float(config.get("validation_split", 0.15))
-            )
-            # target windows alinhadas (para pesos do ensemble)
-            n_tr, n_v = X_train.shape[0], X_val.shape[0]
-            tw_train, tw_val, tw_test = tw_all[:n_tr], tw_all[n_tr:n_tr + n_v], tw_all[n_tr + n_v:]
+            X_train, y_train = X_all[sl["train"]], y_all[sl["train"]]
+            X_val,   y_val   = X_all[sl["val"]],   y_all[sl["val"]]
+            X_test,  y_test  = X_all[sl["test"]],  y_all[sl["test"]]
+            ts_train, ts_val, ts_test = ts_all[sl["train"]], ts_all[sl["val"]], ts_all[sl["test"]]
+            tw_train, tw_val, tw_test = tw_all[sl["train"]], tw_all[sl["val"]], tw_all[sl["test"]]
+
+            print(f"[SPLIT] train={X_train.shape} val={X_val.shape} test={X_test.shape}")
 
             # -------------------------
             # normalização por estratégia
@@ -552,16 +603,22 @@ class ModelService:
                 inverse_ctx_test = None
 
             elif norm_strategy == "local":
-                target_idx = X_train.shape[2] - 1 if self._y_mode_needs_target_in_X(y_mode) else 0
+                # As estatísticas de y vêm SEMPRE das janelas do alvo, não de um canal
+                # de X. Assim a normalização de y independe de o alvo estar ou não
+                # entre as features, e os braços do experimento ficam comparáveis.
+                target_idx = X_train.shape[2] - 1 if append_target else 0
                 # guarde ctx do TREINO para inversão de métricas do treino
                 X_train_scaled, y_train_scaled, ctx_train_local = processor.normalize_local(
-                    X_train, y_train, x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
+                    X_train, y_train, x_mode=x_mode, y_mode=y_mode,
+                    target_idx=target_idx, target_windows=tw_train
                 )
                 X_val_scaled, y_val_scaled, _ = processor.apply_normalization_local(
-                    X_val, y_val, x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
+                    X_val, y_val, x_mode=x_mode, y_mode=y_mode,
+                    target_idx=target_idx, target_windows=tw_val
                 )
                 X_test_scaled, y_test_scaled, inverse_ctx_test = processor.apply_normalization_local(
-                    X_test, y_test, x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
+                    X_test, y_test, x_mode=x_mode, y_mode=y_mode,
+                    target_idx=target_idx, target_windows=tw_test
                 )
                 inverse_kind = "local"
 
@@ -940,18 +997,38 @@ class ModelService:
                 timestamp_col="timestamp", ts_mode="horizon"
             )
             tw_all = self._build_target_windows(data_df[target_col].values, window_size, steps_ahead)
-            
-            X_train, X_val, X_test, y_train, y_val, y_test = processor.split_data(
-                X_all, y_all,
+
+            # mesma política de canal do alvo e de embargo usada no treino
+            append_target = self._resolve_include_target_channel(
+                config.get("include_target_channel", "equalized"),
+                norm_strategy=norm_strategy,
+                y_mode=y_mode,
+            )
+            if append_target:
+                X_all = np.concatenate([X_all, tw_all], axis=2)
+
+            embargo = config.get("embargo", None)
+            if embargo is None:
+                legacy = str(config.get("include_target_channel", "equalized")).lower() == "legacy"
+                embargo = 0 if legacy else (window_size + steps_ahead - 1)
+            embargo = int(embargo)
+
+            logger.info(
+                f"[FINETUNE] canal_do_alvo_em_X={append_target} | canais={X_all.shape[2]} | embargo={embargo}"
+            )
+
+            sl = processor.split_indices(
+                len(X_all),
                 train_size=float(config.get("train_size", 0.7)),
-                validation_size=float(config.get("validation_split", 0.15))
+                validation_size=float(config.get("validation_split", 0.15)),
+                embargo=embargo,
             )
-            ts_train, ts_val, ts_test = self._split_timestamps(
-                ts_all, float(config.get("train_size", 0.7)), float(config.get("validation_split", 0.15))
-            )
-            n_tr, n_v = X_train.shape[0], X_val.shape[0]
-            tw_train, tw_val, tw_test = tw_all[:n_tr], tw_all[n_tr:n_tr + n_v], tw_all[n_tr + n_v:]
-            
+            X_train, y_train = X_all[sl["train"]], y_all[sl["train"]]
+            X_val,   y_val   = X_all[sl["val"]],   y_all[sl["val"]]
+            X_test,  y_test  = X_all[sl["test"]],  y_all[sl["test"]]
+            ts_train, ts_val, ts_test = ts_all[sl["train"]], ts_all[sl["val"]], ts_all[sl["test"]]
+            tw_train, tw_val, tw_test = tw_all[sl["train"]], tw_all[sl["val"]], tw_all[sl["test"]]
+
             logger.info(f"[FINETUNE] Split: train={X_train.shape}, val={X_val.shape}, test={X_test.shape}")
             
             # === 7. NORMALIZAÇÃO ===
@@ -968,15 +1045,21 @@ class ModelService:
                 inverse_ctx_test = None
             
             elif norm_strategy == "local":
-                target_idx = 0
+                # BUGFIX: antes usava target_idx=0 sem o alvo em X, o que normalizava o
+                # alvo pela janela de 'open' em vez de 'close'. Agora as estatísticas de y
+                # vêm sempre das janelas do alvo.
+                target_idx = X_train.shape[2] - 1 if append_target else 0
                 X_train_scaled, y_train_scaled, ctx_train_local = processor.normalize_local(
-                    X_train, y_train, x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
+                    X_train, y_train, x_mode=x_mode, y_mode=y_mode,
+                    target_idx=target_idx, target_windows=tw_train
                 )
                 X_val_scaled, y_val_scaled, _ = processor.apply_normalization_local(
-                    X_val, y_val, x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
+                    X_val, y_val, x_mode=x_mode, y_mode=y_mode,
+                    target_idx=target_idx, target_windows=tw_val
                 )
                 X_test_scaled, y_test_scaled, inverse_ctx_test = processor.apply_normalization_local(
-                    X_test, y_test, x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
+                    X_test, y_test, x_mode=x_mode, y_mode=y_mode,
+                    target_idx=target_idx, target_windows=tw_test
                 )
                 inverse_kind = "local"
             
@@ -1331,12 +1414,17 @@ class ModelService:
         window_features = df[feat_no_target].values[-window_size:]   # (L, F)
         X_window = np.expand_dims(window_features, axis=0)           # (1, L, F)
 
-        # Se normalização local exigir o alvo dentro do X, concatena a janela do alvo como ÚLTIMO canal
-        needs_target_in_x = (
-            norm_strategy == "local" and self._y_mode_needs_target_in_X(y_mode)
+        # A janela do alvo é sempre necessária: como canal extra de X (quando o treino
+        # incluiu) e/ou como fonte das estatísticas da normalização local.
+        target_win = df[target_column].values[-window_size:].reshape(1, window_size, 1)
+
+        # Mesma política do treino — precisa bater, senão o shape de entrada diverge do modelo.
+        append_target = self._resolve_include_target_channel(
+            config.get("include_target_channel", "equalized"),
+            norm_strategy=norm_strategy,
+            y_mode=y_mode,
         )
-        if needs_target_in_x:
-            target_win = df[target_column].values[-window_size:].reshape(1, window_size, 1)
+        if append_target:
             X_window = np.concatenate([X_window, target_win], axis=2)   # (1, L, F+1)
             target_idx = X_window.shape[2] - 1
         else:
@@ -1362,7 +1450,8 @@ class ModelService:
             # usa target_idx calculado acima
             Xn, _y0, ctx = processor.apply_normalization_local(
                 X_window, np.zeros((1, steps_ahead)),
-                x_mode=x_mode, y_mode=y_mode, target_idx=target_idx
+                x_mode=x_mode, y_mode=y_mode, target_idx=target_idx,
+                target_windows=target_win
             )
             y_pred_scaled = model.predict(Xn) if hasattr(model, "predict") else trainer.predict(model, Xn)
             y_pred = processor.inverse_transform_local(y_pred_scaled, ctx)
