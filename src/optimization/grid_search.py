@@ -66,13 +66,18 @@ def impasse_no_escalonador(*, pendentes: int, rodando: int, admitiu: bool,
     return tentativas > limite
 
 def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
-                        score_on: str = "validation"):
+                    score_on: str = "validation"):
     """Grid search com suporte a execução paralela segura.
 
     `score_on` e "validation" por padrao: escolher hiperparametro pela metrica
     do teste transforma o teste em conjunto de selecao e infla o resultado
     final. O teste continua disponivel, mas como relato, nao como criterio.
     """
+    # Import tardio: services.model_service importa este modulo no topo, entao
+    # importar de la em tempo de modulo criaria ciclo. O worker fica junto de
+    # ModelService porque e ele quem instancia o servico em cada processo filho.
+    from services.model_service import _train_job_worker
+
     service.validar_score(score, score_on)
 
     base_cfg, grid = service._split_unified_grid_config(unified_config)

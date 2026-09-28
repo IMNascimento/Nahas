@@ -1023,6 +1023,7 @@ class ModelService:
             # === 1. CARREGAR MÉTRICAS DO MODELO ORIGINAL ===
             logger.info("[FINETUNE] Carregando métricas do modelo original...")
             original_metrics = None
+            original_run = None
             try:
                 ensure_db_connection()
                 original_run = TrainingRun.get(TrainingRun.run_uuid == original_run_id)
@@ -1038,6 +1039,19 @@ class ModelService:
             os.makedirs(backup_dir, exist_ok=True)
             backup_model_path = os.path.join(backup_dir, os.path.basename(model_path))
             
+            # original_config era usado abaixo sem nunca ser definido, o que levantava
+            # NameError em todo fine-tuning. TrainingRun.config_path guarda o caminho
+            # do JSON de hiperparametros do run de origem.
+            original_config = None
+            try:
+                caminho_cfg = getattr(original_run, "config_path", None)
+                if caminho_cfg and os.path.exists(caminho_cfg):
+                    with open(caminho_cfg, encoding="utf-8") as _f:
+                        original_config = json.load(_f)
+                    logger.info(f"[FINETUNE] Config original carregada de {caminho_cfg}")
+            except Exception as e:
+                logger.warning(f"[FINETUNE] Falha ao carregar config original: {e}")
+
             symbol = symbol or config.get("symbol") or (original_config or {}).get("symbol", "BTCUSDT")
             interval = interval or config.get("interval") or (original_config or {}).get("interval", "1h")
             currency = currency or config.get("currency") or (original_config or {}).get("currency", "USDT")
