@@ -1,0 +1,9 @@
+# Dependencias de funcionalidades opcionais, NAO instaladas no ambiente em que os
+# experimentos da dissertacao rodaram. Sem elas, os caminhos correspondentes
+# levantam ImportError com mensagem explicita.
+#
+#   framework "pytorch" na interface  -> precisa de torch
+#   services/metatrader.py            -> precisa de MetaTrader5 (somente Windows)
+
+torch==2.5.1
+MetaTrader5==5.0.45

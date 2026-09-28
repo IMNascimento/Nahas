@@ -1,82 +1,252 @@
+import copy
 import os
+import time
+import uuid
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import json
-from database.model_nahas import TrainingRun, FineTuningRun, db
+import random
+import signal
+from contextlib import contextmanager
+
+from database.model_nahas import TrainingRun, FineTuningRun, db, GridResult
+from database.model_nocapital import PriceHistory
+from peewee import fn
 from services.trainer_factory import TrainerFactory
 from data.data_processing import DataProcessor
 from utils.technical_indicators import TechnicalIndicators
 from utils.plotter import Plotter
 from utils.csv_exporter import CSVExporter
 from config.settings import BASE_DIR, Settings, set_seed, set_cuda_tensorflow, set_cuda_pytorch
-import random
 from services.binance import BinanceData
 from utils.db_utils import ensure_db_connection
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from data.evomsn_normalizer import EvoMSNNormalizer, EvoMSNLikeNormalizer
+from utils.baselines import evaluate_against_baselines
+import optimization.grid_search as _grid
+
+import concurrent.futures
+from typing import Any, Dict, List, Tuple
+from utils.capacity_train import pick_gpu_for_job, estimate_job_mem_bytes 
 
 
-def prepare_and_set_seed(config):
-        # Usa a seed fornecida ou gera uma nova
-        seed = config.get("seed", None)
-        if seed is None:
-            # Gera seed aleatória de 32 bits, já que TF, numpy, etc aceitam int32
-            seed = random.SystemRandom().randint(0, 2**32 - 1)
-            config["seed"] = seed  # Adiciona no config para ficar registrado!
-            print(f"Seed não fornecida. Gerada: {config['seed']}")
-        set_seed(seed)  # sua função já universaliza para numpy, tf, etc.
-        return seed
+# -------------------------
+# TIMEOUT (comentar no Windows)
+# -------------------------
+class TimeoutError(Exception):
+    pass
+
+@contextmanager
+def timeout(seconds):
+    """Context manager para timeout. Comentar no Windows."""
+    def timeout_handler(signum, frame):
+        raise TimeoutError(f"Operação excedeu {seconds} segundos")
+    
+    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(seconds)
+    
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+
+
+# -------------------------
+# WORKER COM FIX DE BANCO
+# -------------------------
+def _train_job_worker(args: Tuple[Dict[str, Any], str, str, str, int | None]):
+    """
+    Worker paralelo com:
+    - Reconexão MySQL isolada por processo (FIX crítico)
+    - Proteção contra deadlocks de GPU
+    - Timeout para operações longas
+    """
+    cfg, fw, mt, artifacts_base, gpu_idx = args
+    
+    worker_id = os.getpid()
+    print(f"[WORKER-{worker_id}] Iniciando | GPU: {gpu_idx} | Framework: {fw} | Model: {mt}", flush=True)
+    
+    # === CRÍTICO: RECONECTAR BANCO (evita "Packet sequence number wrong") ===
+    try:
+        from database.model_base import db
+        if not db.is_closed():
+            db.close()
+        db.connect(reuse_if_open=False)
+        print(f"[WORKER-{worker_id}] ✓ Conexão MySQL criada para PID {worker_id}", flush=True)
+    except Exception as e:
+        print(f"[WORKER-{worker_id}] ✗ ERRO ao conectar ao banco: {e}", flush=True)
+        raise
+    
+    try:
+        # === GPU CONFIG ===
+        if gpu_idx is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_idx)
+            cfg = cfg.copy()
+            cfg["use_gpu"] = True
+            cfg["gpu_index"] = 0  # Sempre 0 após isolation
+            print(f"[WORKER-{worker_id}] GPU {gpu_idx} isolada (mapeada para 0)", flush=True)
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+            cfg = cfg.copy()
+            cfg["use_gpu"] = False
+            cfg["gpu_index"] = None
+            print(f"[WORKER-{worker_id}] Modo CPU", flush=True)
+        
+        # === FRAMEWORK INIT ===
+        try:
+            with timeout(30):
+                if fw.lower() in ("tensorflow", "keras"):
+                    import tensorflow as tf
+                    gpus = tf.config.list_physical_devices('GPU')
+                    if gpus:
+                        try:
+                            for gpu in gpus:
+                                tf.config.experimental.set_memory_growth(gpu, True)
+                            print(f"[WORKER-{worker_id}] TF memory growth habilitado", flush=True)
+                        except RuntimeError as e:
+                            print(f"[WORKER-{worker_id}] Aviso memory growth: {e}", flush=True)
+                    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+                    
+                elif fw.lower() == "pytorch":
+                    import torch
+                    if gpu_idx is not None and not torch.cuda.is_available():
+                        raise RuntimeError("PyTorch: CUDA não disponível")
+                    print(f"[WORKER-{worker_id}] PyTorch pronto", flush=True)
+                
+                print(f"[WORKER-{worker_id}] Framework {fw} inicializado", flush=True)
+                
+        except TimeoutError as e:
+            print(f"[WORKER-{worker_id}] TIMEOUT init framework: {e}", flush=True)
+            raise RuntimeError(f"Framework {fw} travou na inicialização")
+        
+        # === SEED ===
+        seed_val = cfg.get("seed")
+        if seed_val is None or str(seed_val).upper() == "RANDOM":
+            seed_val = random.SystemRandom().randint(0, 2**32 - 1)
+            cfg["seed"] = seed_val
+        
+        print(f"[WORKER-{worker_id}] Seed: {seed_val}", flush=True)
+        set_seed(seed_val)
+        
+        # === TREINO ===
+        print(f"[WORKER-{worker_id}] Iniciando treino...", flush=True)
+        svc = ModelService()
+        
+        try:
+            with timeout(7200):  # 2h max
+                out = svc.train(cfg, fw, mt, artifacts_base=artifacts_base)
+            print(f"[WORKER-{worker_id}] ✓ Treino concluído!", flush=True)
+            return out
+            
+        except TimeoutError:
+            print(f"[WORKER-{worker_id}] ✗ TIMEOUT treino (>2h)", flush=True)
+            raise RuntimeError("Treino excedeu 2 horas")
+        
+        finally:
+            # Fecha conexão ao terminar
+            try:
+                from database.model_base import db
+                if not db.is_closed():
+                    db.close()
+                    print(f"[WORKER-{worker_id}] Conexão MySQL fechada", flush=True)
+            except Exception:
+                pass
+    
+    except Exception as e:
+        print(f"[WORKER-{worker_id}] ✗ ERRO: {type(e).__name__}: {str(e)}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise
+
+
+# -------------------------
+# Helpers originais
+# -------------------------
+def prepare_and_set_seed(config: dict) -> int:
+    seed = config.get("seed")
+    if isinstance(seed, str):
+        s = seed.strip()
+        if s.upper() == "RANDOM" or s == "":
+            seed = None
+        else:
+            try:
+                seed = int(s)
+            except Exception:
+                seed = None
+    if not isinstance(seed, (int, np.integer)):
+        seed = random.SystemRandom().randint(0, 2**32 - 1)
+    config["seed"] = int(seed)
+    set_seed(int(seed))
+    return int(seed)
+
 
 def get_epochs_trained(model_or_history):
-    # Caso seja Keras/TensorFlow com .history
     if hasattr(model_or_history, "history") and isinstance(model_or_history.history, dict):
-        # keras==3 pode ser dict
         return len(model_or_history.history.get("loss", []))
     if hasattr(model_or_history, "history") and hasattr(model_or_history.history, "epoch"):
         return len(model_or_history.history.epoch)
-    if hasattr(model_or_history, "epoch"):  # pytorch-lightning style
+    if hasattr(model_or_history, "epoch"):
         return model_or_history.epoch if isinstance(model_or_history.epoch, int) else len(model_or_history.epoch)
-    # Caso vc tenha customizado para salvar o número de epochs (PyTorch puro)
     if hasattr(model_or_history, "epochs_trained"):
         return model_or_history.epochs_trained
-    # Se for o trainer PyTorch e você não salvou nada: retorna o número de epochs do config
     if hasattr(model_or_history, "epochs"):
         return model_or_history.epochs
-    # Se for um dicionário de history
-    if isinstance(model_or_history, dict):
-        if "loss" in model_or_history:
-            return len(model_or_history["loss"])
+    if isinstance(model_or_history, dict) and "loss" in model_or_history:
+        return len(model_or_history["loss"])
     return None
 
+
+def _parse_dt(x):
+    if isinstance(x, datetime):
+        return x
+    if isinstance(x, str):
+        return datetime.strptime(x, "%Y-%m-%d %H:%M:%S")
+    return datetime.now()
 
 class ModelService:
     def __init__(self):
         pass
 
-    def _get_save_dirs(self, base_folder, hash_id=None):
-        """Cria estrutura de diretórios organizada na raiz do projeto (src/results/...)."""
-        hash_id = hash_id or datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # Caminho base da pasta 'result' dentro da raiz do projeto
-        base_path = os.path.join(BASE_DIR, "results", base_folder, hash_id)
+    # -------------------------
+    # métricas básicas
+    # -------------------------
+    @staticmethod
+    def _compute_basic_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+        yt = np.asarray(y_true).reshape(-1)
+        yp = np.asarray(y_pred).reshape(-1)
+        mse = float(mean_squared_error(yt, yp))
+        rmse = float(np.sqrt(mse))
+        mae = float(mean_absolute_error(yt, yp))
+        r2  = float(r2_score(yt, yp))
+        # MAPE em porcentagem. O piso no denominador evita divisao por zero quando
+        # a serie passa por zero; sem ele a metrica vira inf e contamina o relatorio.
+        denom = np.maximum(np.abs(yt), 1e-8)
+        mape = float(np.mean(np.abs((yt - yp) / denom)) * 100.0)
+        return {"mse": mse, "rmse": rmse, "mae": mae, "r2": r2, "mape": mape}
 
-        # Cria as subpastas necessárias
+    # -------------------------
+    # infra de pastas
+    # -------------------------
+    def _get_save_dirs(self, base_folder, hash_id=None):
+        hash_id = hash_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_path = os.path.join(BASE_DIR, "results", base_folder, hash_id)
         os.makedirs(os.path.join(base_path, "models"), exist_ok=True)
         os.makedirs(os.path.join(base_path, "csv"), exist_ok=True)
         os.makedirs(os.path.join(base_path, "graficos"), exist_ok=True)
         os.makedirs(os.path.join(base_path, "scaler"), exist_ok=True)
         os.makedirs(os.path.join(base_path, "hiperparams"), exist_ok=True)
-
         return base_path
-    
 
+    # -------------------------
+    # pós-processamento universal
+    # -------------------------
     def universal_postprocess(self, y_pred, y_test, timestamps):
-        # y_pred, y_test: np.array de shape [n, steps] ou [n,]
-        # timestamps: array/lista de tamanho >= n (usar os últimos n)
         y_pred = np.array(y_pred)
         y_test = np.array(y_test)
         timestamps = np.array(timestamps)
 
-        # Garante sempre [n, steps]
         if y_pred.ndim == 1:
             y_pred = y_pred.reshape(-1, 1)
         if y_test.ndim == 1:
@@ -84,81 +254,502 @@ class ModelService:
 
         n_samples = y_pred.shape[0]
         n_steps = y_pred.shape[1]
-        y_test = y_test[:, :n_steps]  # Ajuste se vier steps extras
+        y_test = y_test[:, :n_steps]
 
-        # Checa shapes
         assert y_pred.shape == y_test.shape, f"Shape mismatch: y_test={y_test.shape}, y_pred={y_pred.shape}"
-        assert len(timestamps) >= n_samples, "Timestamps length mismatch"
+        if len(timestamps) != n_samples:
+            # Cortar pelo fim alinhava series diferentes em silencio: o CSV e os
+            # graficos sairiam deslocados no tempo sem nenhum aviso.
+            raise ValueError(
+                f"timestamps={len(timestamps)} difere do numero de previsoes={n_samples}."
+            )
 
-        return y_pred, y_test, timestamps[-n_samples:], n_steps
+        return y_pred, y_test, timestamps, n_steps
 
-    def train(
-        self, config: dict, framework: str, model_type: str, X=None, y=None, run_id=None
-    ):
+    # -------------------------
+    # util: extrair config de normalização
+    # -------------------------
+    def _norm_cfg(self, config: dict):
+        norm = config.get("normalization", {}) or {}
+        strategy = norm.get("strategy", "global").lower()  # "global" | "local" | "evomsn" | "evomsn_like"
+        if strategy not in ("global", "local", "evomsn", "evomsn_like"):
+            raise ValueError("normalization.strategy deve ser 'global', 'local', 'evomsn' ou 'evomsn_like'.")
+
+        scaler_type = norm.get("scaler_type", "robust")   # global
+        x_mode = norm.get("x_mode", "zscore")             # local
+        y_mode = norm.get("y_mode", "none")               # local
+
+        # EvoMSN params
+        ev_k   = int(norm.get("evomsn_k_scales", config.get("evomsn_k_scales", 4)))
+        ev_agg = norm.get("evomsn_agg", "fft")            # "fft" | "uniform"
+        ev_pred = norm.get("evomsn_predictor", config.get("evomsn_predictor", "linear"))  # "linear" | "mlp"
+        # H < periodo torna a dispersao do alvo indefinida; ver EvoMSNNormalizer
+        ev_short = norm.get(
+            "evomsn_short_horizon_policy",
+            config.get("evomsn_short_horizon_policy", "window_stats"),
+        )  # "window_stats" | "legacy" | "error"
+        # Escala dos canais antes da FFT que escolhe os periodos dominantes.
+        # "legacy" mantem a media de amplitudes sobre o X cru, dominada pelo canal
+        # de maior escala; "per_channel" padroniza cada canal antes de somar.
+        ev_periodo = norm.get(
+            "evomsn_period_scaling",
+            config.get("evomsn_period_scaling", "per_channel"),
+        )  # "per_channel" | "legacy"
+
+        return strategy, scaler_type, x_mode, y_mode, {
+            "k_scales": ev_k, "agg": ev_agg, "predictor": ev_pred,
+            "short_horizon_policy": ev_short,
+            "period_scaling": ev_periodo,
+        }
+
+    # -------------------------
+    # util: y_mode local exige o alvo dentro do X
+    # -------------------------
+    @staticmethod
+    def _y_mode_needs_target_in_X(y_mode: str) -> bool:
+        return y_mode in ("relative_last", "zscore_target", "minmax_target", "robust_target")
+
+    @staticmethod
+    def mensagem_sem_dados(symbol, interval, currency, exchange, source,
+                           inicio, fim, disponiveis=None) -> str:
+        """Mensagem de 'sem dados' que aponta o filtro, e nao so o resultado.
+
+        A causa mais comum nao e ausencia de historico: e divergencia entre o
+        `source`/`exchange` do config e o que esta gravado na tabela. Sem listar o
+        que existe, a mensagem manda procurar no lugar errado.
         """
-        Treina qualquer modelo, qualquer framework, usando configuração.
-        - config: dicionário de hiperparâmetros.
-        - framework: 'keras', 'pytorch', 'tensorflow'
-        - model_type: 'lstm', 'transformer', etc.
-        - X, y: opcionais (se quiser passar dados prontos).
+        linhas = [
+            f"Nenhum dado encontrado para: {symbol} {interval} {currency}",
+            f"Filtros usados: exchange={exchange!r}, source={source!r}",
+            f"Periodo: {inicio} a {fim}",
+        ]
+        if disponiveis:
+            combos = ", ".join(f"source={s!r}/exchange={e!r} ({n} linhas)"
+                               for s, e, n in disponiveis)
+            linhas.append(f"Disponivel na tabela para esse simbolo e intervalo: {combos}")
+            linhas.append("Ajuste 'source'/'exchange' no config, ou reimporte com esses valores.")
+        else:
+            linhas.append("Nao ha nenhuma linha para esse simbolo e intervalo, "
+                          "independentemente de source/exchange.")
+        return "\n".join(linhas)
+
+    @staticmethod
+    def policy_from_config(config: dict) -> str:
+        """Politica do canal do alvo declarada em um config JA SALVO.
+
+        Config gravado antes da chave existir descreve um modelo treinado no
+        comportamento antigo; assumir o padrao novo mudaria o numero de canais
+        da entrada e quebraria (ou desalinharia) a inferencia.
         """
+        modo = (config or {}).get("include_target_channel")
+        return "legacy" if modo is None else modo
+
+    @staticmethod
+    def _resolve_include_target_channel(mode, *, norm_strategy: str, y_mode: str) -> bool:
+        """
+        Decide se a janela histórica do alvo entra em X como canal extra.
+
+        Valores aceitos em `include_target_channel`:
+          • "equalized" (padrão) / True  -> SEMPRE inclui, em todas as estratégias.
+            É o que torna global, local e evomsn comparáveis: mesma entrada, só muda
+            a normalização.
+          • "never" / False              -> NUNCA inclui. Útil para isolar o efeito da
+            normalização sem dar ao modelo a própria série do alvo.
+          • "legacy"                     -> reproduz o comportamento anterior (inclui
+            apenas em `local` com y_mode dependente do alvo). Mantido para reproduzir
+            os resultados já publicados.
+        """
+        if isinstance(mode, bool):
+            return mode
+        m = str(mode).strip().lower()
+        if m in ("equalized", "always", "true", "1", "yes"):
+            return True
+        if m in ("never", "false", "0", "no"):
+            return False
+        if m == "legacy":
+            return norm_strategy == "local" and ModelService._y_mode_needs_target_in_X(y_mode)
+        raise ValueError(
+            f"include_target_channel inválido: {mode!r}. "
+            "Use 'equalized', 'never' ou 'legacy'."
+        )
+
+    # constrói janelas do alvo para concatenar como último canal do X
+    @staticmethod
+    def _build_target_windows(target_series: np.ndarray, window_size: int, steps_ahead: int) -> np.ndarray:
+        n = len(target_series) - window_size - steps_ahead + 1
+        if n <= 0:
+            raise ValueError("Série muito curta para window_size e steps_ahead.")
+        tw = np.empty((n, window_size, 1), dtype=float)
+        for i in range(n):
+            tw[i, :, 0] = target_series[i:i + window_size]
+        return tw
+
+
+    # -------------------------
+    # Helper: gera nome descritivo do modelo
+    # -------------------------
+    @staticmethod
+    def _generate_model_identifier(
+        symbol: str,
+        interval: str,
+        currency: str = None,
+        exchange: str = None,
+        source: str = None,
+        hash_id: str = None
+    ) -> dict:
+        """
+        Gera identificador padronizado e metadados para o modelo.
+        
+        Returns:
+            dict com 'prefix', 'full_name', 'metadata'
+        """
+        # Limpar valores None ou vazios
+        parts = [
+            symbol.upper() if symbol else "UNKNOWN",
+            interval.lower() if interval else "unknown",
+        ]
+        
+        # Adicionar currency se disponível
+        if currency:
+            parts.append(currency.upper())
+        
+        # Adicionar exchange se disponível (resumido)
+        if exchange:
+            parts.append(exchange.upper()[:3])  # BINANCE -> BIN
+        
+        # Criar prefix compacto
+        prefix = "_".join(parts)
+        
+        # Nome completo com hash
+        if hash_id:
+            full_name = f"{prefix}_{hash_id}"
+        else:
+            full_name = prefix
+        
+        # Metadados completos
+        metadata = {
+            "symbol": symbol,
+            "interval": interval,
+            "currency": currency,
+            "exchange": exchange,
+            "source": source,
+            "model_identifier": full_name,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        return {
+            "prefix": prefix,
+            "full_name": full_name,
+            "metadata": metadata
+        }
+    
+    # -------------------------
+    # Helper: salva metadados do modelo
+    # -------------------------
+    @staticmethod
+    def _save_model_metadata(base_path: str, metadata: dict, config: dict):
+        """Salva arquivo JSON com metadados do modelo para uso futuro."""
+        metadata_path = os.path.join(base_path, "model_metadata.json")
+        
+        full_metadata = {
+            **metadata,
+            "config_summary": {
+                "window_size": config.get("window_size"),
+                "steps_ahead": config.get("steps_ahead"),
+                "target_column": config.get("target_column"),
+                "normalization": config.get("normalization"),
+                "framework": config.get("framework"),
+                "model_type": config.get("model_type"),
+            }
+        }
+        
+        with open(metadata_path, "w") as f:
+            json.dump(full_metadata, f, indent=4)
+        
+        print(f"[METADATA] Salvo: {metadata_path}")
+        return metadata_path
+
+    # -------------------------
+    # Helper: carrega metadados do modelo
+    # -------------------------
+    @staticmethod
+    def _load_model_metadata(model_path: str) -> dict:
+        """
+        Carrega metadados de um modelo a partir do diretório.
+        
+        Args:
+            model_path: Caminho completo do arquivo do modelo
+            
+        Returns:
+            dict com metadados ou dict vazio se não encontrar
+        """
+        # Subir 1 nível para pegar a pasta results/train/{hash_id}/
+        base_dir = os.path.dirname(os.path.dirname(model_path))
+        metadata_path = os.path.join(base_dir, "model_metadata.json")
+        
+        if os.path.exists(metadata_path):
+            with open(metadata_path, "r") as f:
+                return json.load(f)
+        
+        print(f"[WARN] Metadados não encontrados: {metadata_path}")
+        return {}
+    
+    # -------------------------
+    # TREINO
+    # -------------------------
+    def train(self, config: dict, framework: str, model_type: str, X=None, y=None, run_id=None, artifacts_base: str = "train",  symbol: str = None, interval: str = None, currency: str = None, source: str = None, exchange: str = None):
         seed = prepare_and_set_seed(config)
         config["seed"] = seed
+
         if config.get("use_gpu", True):
             if framework.lower() in ("tensorflow", "keras"):
                 set_cuda_tensorflow(config.get("gpu_index", 0))
             elif framework.lower() == "pytorch":
                 set_cuda_pytorch(config.get("gpu_index", 0))
+
+        symbol = symbol or config.get("symbol", "BTCUSDT")
+        interval = interval or config.get("interval", "1h")
+        currency = currency or config.get("currency", "USDT")
+        source = source or config.get("source")
+        exchange = exchange or config.get("exchange")
+
+        config["symbol"] = symbol
+        config["interval"] = interval
+        config["currency"] = currency 
+        if source:
+            config["source"] = source
+        if exchange:
+            config["exchange"] = exchange
+
+        norm_strategy, scaler_type, x_mode, y_mode, evcfg = self._norm_cfg(config)
         hash_id = run_id or config.get("run_id") or datetime.now().strftime("%Y%m%d_%H%M%S")
-        base_path = self._get_save_dirs("train", hash_id)
-        ext = {
-            "keras": ".keras",
-            "tensorflow": ".keras",
-            "pytorch": ".pt"
-        }.get(framework.lower(), ".model")
+        model_id_info = self._generate_model_identifier(
+            symbol=symbol,
+            interval=interval,
+            currency=currency,
+            exchange=exchange,
+            source=source,
+            hash_id=hash_id
+        )
+        base_path = self._get_save_dirs(artifacts_base, hash_id)
+        ext = {"keras": ".keras", "tensorflow": ".keras", "pytorch": ".pt"}.get(framework.lower(), ".model")
 
-        model_path = os.path.join(base_path, "models", f"model_{hash_id}{ext}")
-        csv_path = os.path.join(base_path, "csv", f"results_{hash_id}.csv")
+        model_filename = f"model_{model_id_info['full_name']}{ext}"
+        csv_filename = f"results_{model_id_info['full_name']}.csv"
+        config_filename = f"config_{model_id_info['full_name']}.json"
+
+        model_path = os.path.join(base_path, "models", model_filename)
+        csv_path = os.path.join(base_path, "csv", csv_filename)
         scaler_dir = os.path.join(base_path, "scaler")
-        config_path = os.path.join(base_path, "hiperparams", f"config_{hash_id}.json")
-        
+        config_path = os.path.join(base_path, "hiperparams", config_filename)
+        metrics_path = os.path.join(base_path, "metrics.json")
+
+        # Politica do canal do alvo gravada de forma EXPLICITA no config do run.
+        # Sem isso, um config salvo hoje sai sem a chave e, na inferencia, seria lido
+        # como "legacy" (correto para runs antigos), mudando o numero de canais.
+        config["include_target_channel"] = config.get("include_target_channel", "equalized")
+
         with open(config_path, "w") as f:
-            json.dump(config, f, indent=4)  
-        
-        # 1. Dados
+            json.dump(config, f, indent=4)
+
+        metadata_path = self._save_model_metadata(base_path, model_id_info['metadata'], config)
+
+        # -------------------------
+        # 1) Dados
+        # -------------------------
         if X is None or y is None:
-            # Carregamento padrão (você pode parametrizar isso)
-            from database.model_binance import HourlyQuoteBitcoin
-            data_df = HourlyQuoteBitcoin.get_between_dates(config.get("start_date"), config.get("end_date"))
+            df = PriceHistory.get_between_dates(
+                start_date=config.get("start_date"),
+                end_date=config.get("end_date"),
+                symbol=symbol,
+                interval=interval,
+                source=source,
+                exchange=exchange,
+                with_meta=True
+            )
+            
+            if df.empty:
+                disponiveis = []
+                try:
+                    consulta = (PriceHistory
+                                .select(PriceHistory.source, PriceHistory.exchange,
+                                        fn.COUNT(PriceHistory.id).alias("n"))
+                                .where((PriceHistory.symbol == symbol)
+                                       & (PriceHistory.interval == interval))
+                                .group_by(PriceHistory.source, PriceHistory.exchange))
+                    disponiveis = [(r["source"], r["exchange"], r["n"]) for r in consulta.dicts()]
+                except Exception:
+                    pass
+                raise ValueError(self.mensagem_sem_dados(
+                    symbol, interval, currency, exchange, source,
+                    config.get("start_date"), config.get("end_date"), disponiveis))
+            
+            if currency and 'currency' in df.columns:
+                df = df[df['currency'] == currency]
+                if df.empty:
+                    raise ValueError(f"Nenhum dado encontrado para currency={currency}")
+        
             if config.get("indicators_apply"):
-                data_df = TechnicalIndicators.process_indicators(data_df, config.get("indicators_apply"))
+                df = TechnicalIndicators.process_indicators(df, config.get("indicators_apply"))
 
-            original_timestamps = data_df['timestamp'].values
-            data_df = data_df[config.get("relevant_columns")]
-            window_size = config.get("window_size")
-            processor = DataProcessor(window_size=window_size)
-            X, y = processor.create_windows(
-                data=data_df, coluna_alvo=config.get("target_column"), steps_ahead=config.get("steps_ahead")
+            for c in config.get("relevant_columns", []):
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors="coerce")
+
+            window_size = int(config.get("window_size"))
+            steps_ahead = int(config.get("steps_ahead", 1))
+            target_col = config.get("target_column")
+            assert target_col in df.columns, f"Coluna alvo '{target_col}' não encontrada em df."
+
+            feat_cols = [c for c in (config.get("relevant_columns") or []) if c != "timestamp"]
+            cols_for_window = list(dict.fromkeys(feat_cols + [target_col, "timestamp"]))
+            data_df = df[cols_for_window].dropna().reset_index(drop=True)
+
+            processor = DataProcessor(window_size=window_size, scaler_type=scaler_type)
+
+            # janelas + timestamps alinhados ao horizonte
+            X_all, y_all, ts_all = processor.create_windows_and_timestamps(
+                data_df, coluna_alvo=target_col, steps_ahead=steps_ahead,
+                timestamp_col="timestamp", ts_mode="horizon"
             )
-            X_train, X_val, X_test, y_train, y_val, y_test = processor.split_data(
-                X, y, train_size=config.get("train_size"), validation_size=config.get("validation_split")
+
+            # janelas históricas do alvo — sempre construídas, alinhadas 1-para-1 com X_all
+            tw_all = self._build_target_windows(data_df[target_col].values, window_size, steps_ahead)
+
+            # ---------------------------------------------------------------
+            # Canal do alvo em X: mantém as estratégias COMPARÁVEIS.
+            # Antes, o alvo era concatenado em X apenas no braço "local" com
+            # y_mode dependente do alvo, enquanto "global" e "evomsn" ficavam
+            # sem ele. Isso confunde o efeito da normalização com o efeito de
+            # ter a própria série do alvo como feature — justamente o canal que
+            # torna a persistência trivialmente expressável.
+            # ---------------------------------------------------------------
+            append_target = self._resolve_include_target_channel(
+                config.get("include_target_channel", "equalized"),
+                norm_strategy=norm_strategy,
+                y_mode=y_mode,
             )
-            X_train_scaled, y_train_scaled = processor.normalize(X_train, y_train)
-            processor.save_scaler(scaler_dir)
-            X_val_scaled, y_val_scaled = processor.apply_normalization(X_val, y_val)
-            X_test_scaled, y_test_scaled = processor.apply_normalization(X_test, y_test)
+            if append_target:
+                X_all = np.concatenate([X_all, tw_all], axis=2)
+
+            # embargo entre segmentos (o split ocorre depois do janelamento)
+            embargo = config.get("embargo", None)
+            if embargo is None:
+                legacy = str(config.get("include_target_channel", "equalized")).lower() == "legacy"
+                embargo = 0 if legacy else (window_size + steps_ahead - 1)
+            embargo = int(embargo)
+
+            print(f"[SETUP] estrategia={norm_strategy} | canal_do_alvo_em_X={append_target} "
+                  f"| canais={X_all.shape[2]} | embargo={embargo}")
+
+            # split — mesmas fatias para X, y, timestamps e janelas do alvo
+            sl = processor.split_indices(
+                len(X_all),
+                train_size=float(config.get("train_size", 0.7)),
+                validation_size=float(config.get("validation_split", 0.15)),
+                embargo=embargo,
+            )
+            X_train, y_train = X_all[sl["train"]], y_all[sl["train"]]
+            X_val,   y_val   = X_all[sl["val"]],   y_all[sl["val"]]
+            X_test,  y_test  = X_all[sl["test"]],  y_all[sl["test"]]
+            ts_train, ts_val, ts_test = ts_all[sl["train"]], ts_all[sl["val"]], ts_all[sl["test"]]
+            tw_train, tw_val, tw_test = tw_all[sl["train"]], tw_all[sl["val"]], tw_all[sl["test"]]
+
+            print(f"[SPLIT] train={X_train.shape} val={X_val.shape} test={X_test.shape}")
+
+            # -------------------------
+            # normalização por estratégia
+            # -------------------------
+            ctx_train_local = None   # usado só se local
+            ctx_train_msn   = None   # usado só se evomsn/like
+            ctx_val         = None   # contexto de validação, para as métricas de seleção
+
+            if norm_strategy == "global":
+                X_train_scaled, y_train_scaled = processor.normalize_global(X_train, y_train)
+                processor.save_scaler(scaler_dir)
+                X_val_scaled,  y_val_scaled  = processor.apply_normalization_global(X_val,  y_val)
+                X_test_scaled, y_test_scaled = processor.apply_normalization_global(X_test, y_test)
+                inverse_kind = "global"
+                inverse_ctx_test = None
+
+            elif norm_strategy == "local":
+                # As estatísticas de y vêm SEMPRE das janelas do alvo, não de um canal
+                # de X. Assim a normalização de y independe de o alvo estar ou não
+                # entre as features, e os braços do experimento ficam comparáveis.
+                target_idx = X_train.shape[2] - 1 if append_target else 0
+                # guarde ctx do TREINO para inversão de métricas do treino
+                X_train_scaled, y_train_scaled, ctx_train_local = processor.normalize_local(
+                    X_train, y_train, x_mode=x_mode, y_mode=y_mode,
+                    target_idx=target_idx, target_windows=tw_train
+                )
+                X_val_scaled, y_val_scaled, ctx_val = processor.apply_normalization_local(
+                    X_val, y_val, x_mode=x_mode, y_mode=y_mode,
+                    target_idx=target_idx, target_windows=tw_val
+                )
+                X_test_scaled, y_test_scaled, inverse_ctx_test = processor.apply_normalization_local(
+                    X_test, y_test, x_mode=x_mode, y_mode=y_mode,
+                    target_idx=target_idx, target_windows=tw_test
+                )
+                inverse_kind = "local"
+
+            else:  # "evomsn" ou "evomsn_like"
+                if norm_strategy == "evomsn":
+                    msn = EvoMSNNormalizer(
+                        window_size=window_size,
+                        horizon=steps_ahead,
+                        n_features=X_train.shape[2],
+                        target_idx=0,  # pesos vêm de target_windows
+                        k_scales=int(evcfg["k_scales"]),
+                        agg=str(evcfg.get("agg", "fft")),
+                        random_state=seed,
+                        predictor_type=str(evcfg.get("predictor", "linear")),
+                        short_horizon_policy=str(evcfg.get("short_horizon_policy", "window_stats")),
+                        period_scaling=str(evcfg.get("period_scaling", "per_channel")),
+                    )
+                else:
+                    msn = EvoMSNLikeNormalizer(
+                        window_size=window_size,
+                        horizon=steps_ahead,
+                        n_features=X_train.shape[2],
+                        target_idx=0,
+                        k_scales=int(evcfg["k_scales"]),
+                        agg=str(evcfg.get("agg", "fft")),
+                        random_state=seed,
+                        short_horizon_policy=str(evcfg.get("short_horizon_policy", "window_stats")),
+                        period_scaling=str(evcfg.get("period_scaling", "per_channel")),
+                    )
+
+                # treino MSN (períodos globais a partir de X_train)
+                X_train_scaled, y_train_scaled = msn.fit(
+                    X_train, y_train, save_path=scaler_dir, target_windows=tw_train
+                )
+                if msn.degeneracy_report:
+                    print(f"[EvoMSN] {msn.degeneracy_report}")
+                # obtenha ctx também para o CONJUNTO DE TREINO (para inversão das métricas)
+                _Xtr_tmp, _ytr_tmp, ctx_train_msn = msn.transform(X_train, None, target_windows=tw_train)
+                # validação e teste com pesos via janela do alvo
+                X_val_scaled,  y_val_scaled,  ctx_val   = msn.transform(X_val,  y_val,  target_windows=tw_val)
+                X_test_scaled, _y_dummy,     inverse_ctx_test = msn.transform(X_test, None,   target_windows=tw_test)
+                inverse_kind = "evomsn"
+
+                # empacote objeto e ctx de teste para a etapa de inversão
+                inverse_ctx_test = (msn, inverse_ctx_test)
+
         else:
-            # Treinamento com dados externos (para uso futuro)
-            raise NotImplementedError("Suporte a dados externos ainda não implementado.")
+            raise NotImplementedError("Treino com X,y externos ainda não implementado.")
 
-        # 2. Cria trainer via Factory
+        # -------------------------
+        # 2) Trainer/Modelo
+        # -------------------------
         TrainerClass = TrainerFactory.get_trainer(framework, model_type)
         trainer = TrainerClass(input_shape=X_train_scaled.shape[1:], **config)
 
-        # 3. Treina modelo
+        # -------------------------
+        # 3) Treinar
+        # -------------------------
         model = trainer.train(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled)
         trainer.save_model(model_path)
-        # Métricas (Keras)
+
         train_loss, val_loss = None, None
         if hasattr(model, "history") and hasattr(model.history, "history"):
             train_loss = model.history.history["loss"][-1]
@@ -166,33 +757,175 @@ class ModelService:
         elif hasattr(trainer, "get_last_metrics"):
             train_loss, val_loss = trainer.get_last_metrics()
 
-        # 4. Predição/avaliação
+        # -------------------------
+        # 4A) Predição + inversão (TESTE)
+        # -------------------------
         if hasattr(model, "predict"):
-            y_pred_scaled = model.predict(X_test_scaled)
+            y_pred_scaled_test = model.predict(X_test_scaled)
         elif hasattr(trainer, "predict"):
-            y_pred_scaled = trainer.predict(model, X_test_scaled)
+            y_pred_scaled_test = trainer.predict(model, X_test_scaled)
         else:
-            raise RuntimeError("Seu trainer/modelo precisa de método predict")
-        processor.load_scaler(scaler_dir)
+            raise RuntimeError("Seu trainer/modelo precisa de método predict.")
 
-        print("DEBUG y_pred_scaled shape:", y_pred_scaled.shape)
-        print("DEBUG y_test_scaled shape:", y_test_scaled.shape)
-        # Inversão e padronização
-        y_pred = processor.inverse_transform(y_pred_scaled)
-        y_test = processor.inverse_transform(y_test_scaled)
-        y_pred, y_test, timestamps, n_steps = self.universal_postprocess(y_pred, y_test, original_timestamps)
+        if inverse_kind == "global":
+            y_pred_test = processor.inverse_transform_global(y_pred_scaled_test)
+            y_test_orig = processor.inverse_transform_global(y_test_scaled)
 
-        # Debug
-        print("y_pred.shape:", y_pred.shape)
-        print("y_test.shape:", y_test.shape)
-        print("n_steps:", n_steps)
-        print("Len timestamps:", len(timestamps))
+        elif inverse_kind == "local":
+            y_pred_test = processor.inverse_transform_local(y_pred_scaled_test, inverse_ctx_test)
+            y_test_orig = processor.inverse_transform_local(y_test_scaled, inverse_ctx_test)
 
-        # 5. CSV + gráficos
+        else:  # "evomsn" e "evomsn_like"
+            msn, ctx_test = inverse_ctx_test
+            _per_scale_test, y_pred_test = msn.denorm_and_ensemble(y_pred_scaled_test, ctx_test)  # (N,H)
+            y_test_orig = y_test  # já está no domínio real nesse caminho
+
+        # alinhar shapes/timestamps (TESTE)
+        y_pred_test, y_test_orig, timestamps, n_steps = self.universal_postprocess(y_pred_test, y_test_orig, ts_test)
+
+        # -------------------------
+        # 4B) Predição + inversão (TREINO) para métricas
+        # -------------------------
+        if hasattr(model, "predict"):
+            y_pred_scaled_train = model.predict(X_train_scaled)
+        else:
+            y_pred_scaled_train = trainer.predict(model, X_train_scaled)
+
+        if inverse_kind == "global":
+            y_pred_train = processor.inverse_transform_global(y_pred_scaled_train)
+            y_train_orig = processor.inverse_transform_global(y_train_scaled)
+
+        elif inverse_kind == "local":
+            # usa o ctx do TREINO que guardamos na normalização local
+            y_pred_train = processor.inverse_transform_local(y_pred_scaled_train, ctx_train_local)
+            y_train_orig = processor.inverse_transform_local(y_train_scaled, ctx_train_local)
+
+        else:  # "evomsn"/"evomsn_like"
+            # ctx de treino calculado acima (ctx_train_msn)
+            _per_scale_tr, y_pred_train = msn.denorm_and_ensemble(y_pred_scaled_train, ctx_train_msn)
+            y_train_orig = y_train  # já no domínio real
+
+        # alinhar shapes para métricas de treino (timestamps não usados nas métricas):
+        y_pred_train = np.array(y_pred_train)
+        y_train_orig = np.array(y_train_orig)
+        if y_pred_train.ndim == 1:
+            y_pred_train = y_pred_train.reshape(-1, 1)
+        if y_train_orig.ndim == 1:
+            y_train_orig = y_train_orig.reshape(-1, 1)
+        # garantir colunas compatíveis
+        n_steps_train = y_pred_train.shape[1]
+        y_train_orig = y_train_orig[:, :n_steps_train]
+
+        # -------------------------
+        # 4C) Predição + inversão (VALIDAÇÃO)
+        # -------------------------
+        # A validação existe para ESCOLHER (hiperparâmetro, semente, arquitetura).
+        # Sem esta seção, a única métrica disponível para o grid era a do teste, o
+        # que transforma o conjunto de teste em conjunto de seleção.
+        metrics_val = None
+        try:
+            if hasattr(model, "predict"):
+                y_pred_scaled_val = model.predict(X_val_scaled)
+            else:
+                y_pred_scaled_val = trainer.predict(model, X_val_scaled)
+
+            if inverse_kind == "global":
+                y_pred_val = processor.inverse_transform_global(y_pred_scaled_val)
+                y_val_orig = processor.inverse_transform_global(y_val_scaled)
+            elif inverse_kind == "local":
+                y_pred_val = processor.inverse_transform_local(y_pred_scaled_val, ctx_val)
+                y_val_orig = processor.inverse_transform_local(y_val_scaled, ctx_val)
+            else:
+                _per_scale_val, y_pred_val = msn.denorm_and_ensemble(y_pred_scaled_val, ctx_val)
+                y_val_orig = y_val
+
+            y_pred_val = np.asarray(y_pred_val).reshape(len(y_pred_val), -1)
+            y_val_orig = np.asarray(y_val_orig).reshape(len(y_val_orig), -1)[:, :y_pred_val.shape[1]]
+            metrics_val = self._compute_basic_metrics(y_val_orig, y_pred_val)
+        except Exception as e:
+            print(f"[METRICS] WARN: falha ao calcular metricas de validacao: {e}", flush=True)
+
+        # -------------------------
+        # 4D) Métricas (Train/Validation/Test)
+        # -------------------------
+        metrics_train = self._compute_basic_metrics(y_train_orig, y_pred_train)
+        metrics_test  = self._compute_basic_metrics(y_test_orig, y_pred_test)
+
+        metrics_readable = {
+            "MAE - Train data": metrics_train["mae"],
+            "MAE - Test data": metrics_test["mae"],
+            "RMSE - Train data": metrics_train["rmse"],
+            "RMSE - Test data": metrics_test["rmse"],
+            "MSE - Train data": metrics_train["mse"],
+            "MSE - Test data": metrics_test["mse"],
+            "R2 score - Train data": metrics_train["r2"],
+            "R2 score - Test data": metrics_test["r2"],
+        }
+        # --- baselines ingenuos e diagnostico de mimetismo (sempre reportados) ---
+        baseline_report = None
+        try:
+            n_eval = y_pred_test.shape[0]
+            tw_eval = np.asarray(tw_test)[-n_eval:]
+
+            inv_fn = None
+            if inverse_kind == "local":
+                inv_fn = lambda a: processor.inverse_transform_local(a, inverse_ctx_test)
+            elif inverse_kind == "global":
+                inv_fn = processor.inverse_transform_global
+
+            baseline_report = evaluate_against_baselines(
+                y_true=y_test_orig,
+                y_pred=y_pred_test,
+                target_windows=tw_eval,
+                steps_ahead=int(n_steps),
+                inverse_fn=inv_fn,
+            )
+            s = baseline_report["summary"]
+            m = baseline_report["mimicry"]
+            dm = baseline_report["dm_model_vs_persistence"]
+            print(
+                f"[BASELINE] RMSE modelo={baseline_report['model']['rmse']:.4f} | "
+                f"persistencia={baseline_report['persistence']['rmse']:.4f} | "
+                f"excesso={s['excess_rmse_over_persistence_pct']:+.2f}% | "
+                f"DM={dm['dm_stat']:.2f} (p={dm['p_value']:.3g}) | "
+                f"corr_returns={m['corr_returns']:.4f} | "
+                f"acc_direcional={m['directional_accuracy']:.4f}"
+            )
+        except Exception as e:  # diagnostico nunca deve derrubar o treino
+            print(f"[BASELINE][ERRO] nao foi possivel calcular baselines: {e}")
+
+        metrics_bundle = {
+            "train": metrics_train,
+            "validation": metrics_val,
+            "test": metrics_test,
+            "readable": metrics_readable,
+            "baselines": baseline_report,
+            "setup": {
+                "normalization_strategy": norm_strategy,
+                "x_mode": x_mode,
+                "y_mode": y_mode,
+                "include_target_channel": config.get("include_target_channel", "equalized"),
+                "target_channel_in_X": bool(append_target),
+                "n_channels": int(X_train.shape[2]),
+                "embargo": int(embargo),
+                "steps_ahead": int(steps_ahead),
+            },
+            "n_steps": int(n_steps),
+            "window_size": int(window_size),
+            "run_id": hash_id,
+        }
+        with open(metrics_path, "w") as f:
+            json.dump(metrics_bundle, f, indent=4)
+
+        # -------------------------
+        # 5) CSV + Gráficos (TESTE)
+        # -------------------------
         csv_exporter = CSVExporter()
         results_df = csv_exporter.save_predictions_to_csv(
-            timestamps=timestamps, y_test=y_test, y_pred=y_pred, steps_ahead=n_steps, output_path=csv_path
+            timestamps=timestamps, y_test=y_test_orig, y_pred=y_pred_test,
+            steps_ahead=n_steps, output_path=csv_path
         )
+
         plotter = Plotter()
         plotter.plot_price_predictions(
             results_df=results_df,
@@ -202,36 +935,35 @@ class ModelService:
             save_path=os.path.join(base_path, "graficos", "price_predictions.png")
         )
         plotter.plot_errors_over_time(
-            y_test=y_test, y_pred=y_pred,
+            y_test=y_test_orig, y_pred=y_pred_test,
             save_path=os.path.join(base_path, "graficos", "errors_over_time.png")
         )
-
-        plotter.plot_correlation_matrix(
-            df=data_df,
-            columns=config.get("relevant_columns"),
-            save_path=os.path.join(base_path, "graficos", "correlation_matrix.png")
-        )
-
+        try:
+            plotter.plot_correlation_matrix(
+                df=df,
+                columns=config.get("relevant_columns"),
+                save_path=os.path.join(base_path, "graficos", "correlation_matrix.png")
+            )
+        except Exception:
+            pass
         plotter.plot_histogram_of_errors(
-            y_test=y_test,
-            y_pred=y_pred,
+            y_test=y_test_orig, y_pred=y_pred_test,
             save_path=os.path.join(base_path, "graficos", "histogram_errors.png")
         )
-
         plotter.plot_scatter_real_vs_predicted(
-            y_test=y_test,
-            y_pred=y_pred,
+            y_test=y_test_orig, y_pred=y_pred_test,
             save_path=os.path.join(base_path, "graficos", "scatter_real_vs_predicted.png")
         )
 
-         # 6. Salva no banco
-        
-            
+        # -------------------------
+        # 6) Banco
+        # -------------------------
+        metrics_json_db = json.dumps(metrics_bundle, indent=4)
         ensure_db_connection()
         TrainingRun.create(
             run_uuid=hash_id,
-            start_time=config.get("start_date"),
-            end_time=config.get("end_date"),
+            start_time=_parse_dt(config.get("start_date")),
+            end_time=_parse_dt(config.get("end_date")),
             status="finished",
             model_path=model_path,
             csv_metrics_path=csv_path,
@@ -240,186 +972,538 @@ class ModelService:
             framework=framework,
             model_type=model_type,
             target_column=config.get("target_column"),
-            seed=seed,         # ou Settings.SEED se preferir
+            seed=seed,
             gpu_used=Settings.USE_GPU,
             train_loss=train_loss,
             val_loss=val_loss,
             best_epoch=get_epochs_trained(model if not hasattr(model, "history") else model.history),
-            log=None,                           # log_msg pode ser None ou algum resumo do treino
+            log=None,
+            metrics_json=metrics_json_db, 
         )
-            
-        # 6. Retorno
+
         return {
-            "train_loss": float(train_loss) if train_loss else None,
-            "val_loss": float(val_loss) if val_loss else None,
+            "train_loss": float(train_loss) if train_loss is not None else None,
+            "val_loss": float(val_loss) if val_loss is not None else None,
             "model_path": model_path,
             "csv_path": csv_path,
+            "metrics": metrics_bundle,
+            "metrics_path": metrics_path,
             "run_id": hash_id,
             "results_path": base_path,
         }
 
-    def finetune(self, model_path, config, framework, model_type, original_run_id, run_id=None):
+    # -------------------------
+    # FINE-TUNE
+    # -------------------------
+    # -------------------------
+    # FINE-TUNE PRODUCTION-READY
+    # -------------------------
+    def finetune(self, model_path, config, framework, model_type, original_run_id, run_id=None, symbol: str = None, interval: str = None, currency: str = None, source: str = None, exchange: str = None):
         """
-        Fine-tuning universal + registro na tabela FineTuningRun.
+        Fine-tuning production-ready com:
+        - Validação de compatibilidade
+        - Backup automático
+        - Comparação de métricas
+        - Rollback se degradar
+        - Logging detalhado
         """
-
+        from utils.logger import Logger
+        import shutil
+        
+        # Setup logging
         hash_id = run_id or datetime.now().strftime("%Y%m%d_%H%M%S")
         base_path = self._get_save_dirs("finetune", hash_id)
-        if config.get("use_gpu", True):
-            if framework.lower() in ("tensorflow", "keras"):
-                set_cuda_tensorflow(config.get("gpu_index", 0))
-            elif framework.lower() == "pytorch":
-                set_cuda_pytorch(config.get("gpu_index", 0))
+        log_path = os.path.join(base_path, f"finetune_{hash_id}.log")
+        logger = Logger(log_file=log_path)
+        
+        logger.info(f"[FINETUNE] Iniciando fine-tuning do modelo: {model_path}")
+        logger.info(f"[FINETUNE] Run ID: {hash_id} | Original Run: {original_run_id}")
+        
+        try:
+            # === 1. CARREGAR MÉTRICAS DO MODELO ORIGINAL ===
+            logger.info("[FINETUNE] Carregando métricas do modelo original...")
+            original_metrics = None
+            try:
+                ensure_db_connection()
+                original_run = TrainingRun.get(TrainingRun.run_uuid == original_run_id)
+                if original_run.metrics_json:
+                    original_metrics = json.loads(original_run.metrics_json)
+                    logger.info(f"[FINETUNE] Métricas originais carregadas: Test RMSE={original_metrics.get('test', {}).get('rmse', 'N/A')}")
+            except Exception as e:
+                logger.warning(f"[FINETUNE] Falha ao carregar métricas originais: {e}")
+            
+            # === 2. BACKUP DO MODELO ORIGINAL ===
+            logger.info("[FINETUNE] Criando backup do modelo original...")
+            backup_dir = os.path.join(base_path, "backup")
+            os.makedirs(backup_dir, exist_ok=True)
+            backup_model_path = os.path.join(backup_dir, os.path.basename(model_path))
+            
+            symbol = symbol or config.get("symbol") or (original_config or {}).get("symbol", "BTCUSDT")
+            interval = interval or config.get("interval") or (original_config or {}).get("interval", "1h")
+            currency = currency or config.get("currency") or (original_config or {}).get("currency", "USDT")
+            source = source or config.get("source") or (original_config or {}).get("source")
+            exchange = exchange or config.get("exchange") or (original_config or {}).get("exchange")
+            
+            config["symbol"] = symbol
+            config["interval"] = interval
+            config["currency"] = currency
+            if source:
+                config["source"] = source
+            if exchange:
+                config["exchange"] = exchange
 
-        ext = {
-            "keras": ".keras",
-            "tensorflow": ".keras",
-            "pytorch": ".pt"
-        }.get(framework.lower(), ".model")
+            try:
+                shutil.copy2(model_path, backup_model_path)
+                logger.info(f"[FINETUNE] Backup salvo em: {backup_model_path}")
+            except Exception as e:
+                logger.error(f"[FINETUNE] Falha ao criar backup: {e}")
+                raise RuntimeError(f"Não foi possível criar backup do modelo original: {e}")
+            
+            # === 3. VALIDAÇÃO DE CONFIG ===
+            logger.info("[FINETUNE] Validando configuração...")
+            norm_strategy, scaler_type, x_mode, y_mode, evcfg = self._norm_cfg(config)
+            
+            # Verificar compatibilidade de normalização com original
+            try:
+                original_config_path = original_run.config_path
+                with open(original_config_path, "r") as f:
+                    original_config = json.load(f)
+                
+                orig_norm = original_config.get("normalization", {})
+                orig_strategy = orig_norm.get("strategy", "global")
+                
+                if norm_strategy != orig_strategy:
+                    logger.warning(f"[FINETUNE] ⚠️  Estratégia de normalização diferente: Original={orig_strategy}, Novo={norm_strategy}")
+                    logger.warning("[FINETUNE] Isso pode causar incompatibilidades. Considere usar a mesma estratégia.")
+            except Exception as e:
+                logger.warning(f"[FINETUNE] Não foi possível verificar compatibilidade de normalização: {e}")
+            
+            # === 4. CONFIGURAÇÃO DE GPU ===
+            if config.get("use_gpu", True):
+                if framework.lower() in ("tensorflow", "keras"):
+                    set_cuda_tensorflow(config.get("gpu_index", 0))
+                elif framework.lower() == "pytorch":
+                    set_cuda_pytorch(config.get("gpu_index", 0))
+            
+            # === 5. PREPARAR ARTEFATOS ===
+            ext = {"keras": ".keras", "tensorflow": ".keras", "pytorch": ".pt"}.get(framework.lower(), ".model")
+            model_ft_path = os.path.join(base_path, "models", f"model_{hash_id}{ext}")
+            csv_path = os.path.join(base_path, "csv", f"results_{hash_id}.csv")
+            scaler_dir = os.path.join(base_path, "scaler")
+            config_path = os.path.join(base_path, "hiperparams", f"config_{hash_id}.json")
+            plot_dir = os.path.join(base_path, "graficos")
+            metrics_path = os.path.join(base_path, "metrics.json")
+            comparison_path = os.path.join(base_path, "comparison.json")
+            
+            config["run_id"] = hash_id
+            config["include_target_channel"] = self.policy_from_config(config)
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=4)
+            
+            # === 6. CARREGAR E PROCESSAR DADOS ===
+            logger.info("[FINETUNE] Carregando dados para fine-tuning...")
+            df = PriceHistory.get_between_dates(
+                start_date=config.get("start_date"),
+                end_date=config.get("end_date"),
+                symbol=symbol,
+                interval=interval,
+                source=source,
+                exchange=exchange,
+                with_meta=True
+            )
+            
+            if df.empty:
+                raise ValueError(
+                    f"Nenhum dado encontrado para fine-tuning:\n"
+                    f"  Symbol: {symbol}, Interval: {interval}, Currency: {currency}"
+                )
+            
+            # Filtrar por currency
+            if currency and 'currency' in df.columns:
+                df_filtered = df[df['currency'] == currency]
+                if not df_filtered.empty:
+                    df = df_filtered
+                    logger.info(f"[FINETUNE] Filtrado para currency={currency}")
+            
+            if config.get("indicators_apply"):
+                df = TechnicalIndicators.process_indicators(df, config.get("indicators_apply"))
+            
+            for c in config.get("relevant_columns", []):
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors="coerce")
+            
+            window_size = int(config.get("window_size"))
+            steps_ahead = int(config.get("steps_ahead", 1))
+            target_col = config.get("target_column")
+            
+            logger.info(f"[FINETUNE] Parâmetros: window={window_size}, steps_ahead={steps_ahead}, target={target_col}")
+            
+            feat_cols = [c for c in (config.get("relevant_columns") or []) if c != "timestamp"]
+            cols_for_window = list(dict.fromkeys(feat_cols + [target_col, "timestamp"]))
+            data_df = df[cols_for_window].dropna().reset_index(drop=True)
+            
+            logger.info(f"[FINETUNE] Dataset: {len(data_df)} amostras válidas")
+            
+            processor = DataProcessor(window_size=window_size, scaler_type=scaler_type)
+            X_all, y_all, ts_all = processor.create_windows_and_timestamps(
+                data_df, coluna_alvo=target_col, steps_ahead=steps_ahead,
+                timestamp_col="timestamp", ts_mode="horizon"
+            )
+            tw_all = self._build_target_windows(data_df[target_col].values, window_size, steps_ahead)
 
-        # Paths de salvamento
-        model_ft_path = os.path.join(base_path, "models", f"model_{hash_id}{ext}")
-        csv_path = os.path.join(base_path, "csv", f"results_{hash_id}.csv")
-        scaler_dir = os.path.join(base_path, "scaler")
-        config_path = os.path.join(base_path, "hiperparams", f"config_{hash_id}.json")
-        plot_dir = os.path.join(base_path, "graficos")
+            # mesma política de canal do alvo e de embargo usada no treino
+            append_target = self._resolve_include_target_channel(
+                self.policy_from_config(config),
+                norm_strategy=norm_strategy,
+                y_mode=y_mode,
+            )
+            if append_target:
+                X_all = np.concatenate([X_all, tw_all], axis=2)
 
-        # Salva o config usado neste fine-tuning
-        config["run_id"] = hash_id
-        with open(config_path, "w") as f:
-            json.dump(config, f, indent=4)  
+            embargo = config.get("embargo", None)
+            if embargo is None:
+                legacy = str(self.policy_from_config(config)).lower() == "legacy"
+                embargo = 0 if legacy else (window_size + steps_ahead - 1)
+            embargo = int(embargo)
 
-        # Carrega e processa dados (igual train)
-        from database.model_binance import HourlyQuoteBitcoin
-        data_df = HourlyQuoteBitcoin.get_between_dates(config.get("start_date"), config.get("end_date"))
-        if config.get("indicators_apply"):
-            data_df = TechnicalIndicators.process_indicators(data_df, config.get("indicators_apply"))
-        print("DEBUG data_df shape:", data_df.head())
-        original_timestamps = data_df['timestamp'].values
-        data_df = data_df[config.get("relevant_columns")]
-        window_size = config.get("window_size")
-        processor = DataProcessor(window_size=window_size)
-        X, y = processor.create_windows(
-            data=data_df, coluna_alvo=config.get("target_column"), steps_ahead=config.get("steps_ahead")
-        )
-        X_train, X_val, X_test, y_train, y_val, y_test = processor.split_data(
-            X, y, train_size=config.get("train_size"), validation_size=config.get("validation_split")
-        )
-        X_train_scaled, y_train_scaled = processor.normalize(X_train, y_train)
-        processor.save_scaler(scaler_dir)
-        X_val_scaled, y_val_scaled = processor.apply_normalization(X_val, y_val)
-        X_test_scaled, y_test_scaled = processor.apply_normalization(X_test, y_test)
+            logger.info(
+                f"[FINETUNE] canal_do_alvo_em_X={append_target} | canais={X_all.shape[2]} | embargo={embargo}"
+            )
 
-        # Instancia e carrega modelo antigo
-        TrainerClass = TrainerFactory.get_trainer(framework, model_type)
-        trainer = TrainerClass(input_shape=X_train_scaled.shape[1:], **config)
-        trainer.load_model(model_path)
+            sl = processor.split_indices(
+                len(X_all),
+                train_size=float(config.get("train_size", 0.7)),
+                validation_size=float(config.get("validation_split", 0.15)),
+                embargo=embargo,
+            )
+            X_train, y_train = X_all[sl["train"]], y_all[sl["train"]]
+            X_val,   y_val   = X_all[sl["val"]],   y_all[sl["val"]]
+            X_test,  y_test  = X_all[sl["test"]],  y_all[sl["test"]]
+            ts_train, ts_val, ts_test = ts_all[sl["train"]], ts_all[sl["val"]], ts_all[sl["test"]]
+            tw_train, tw_val, tw_test = tw_all[sl["train"]], tw_all[sl["val"]], tw_all[sl["test"]]
 
-        # Fine-tune!
-        model = trainer.finetune(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, config)
-        trainer.save_model(model_ft_path)
+            logger.info(f"[FINETUNE] Split: train={X_train.shape}, val={X_val.shape}, test={X_test.shape}")
+            
+            # === 7. NORMALIZAÇÃO ===
+            logger.info(f"[FINETUNE] Aplicando normalização: {norm_strategy}")
+            ctx_train_local = None
+            ctx_train_msn = None
+            
+            if norm_strategy == "global":
+                X_train_scaled, y_train_scaled = processor.normalize_global(X_train, y_train)
+                processor.save_scaler(scaler_dir)
+                X_val_scaled, y_val_scaled = processor.apply_normalization_global(X_val, y_val)
+                X_test_scaled, y_test_scaled = processor.apply_normalization_global(X_test, y_test)
+                inverse_kind = "global"
+                inverse_ctx_test = None
+            
+            elif norm_strategy == "local":
+                # BUGFIX: antes usava target_idx=0 sem o alvo em X, o que normalizava o
+                # alvo pela janela de 'open' em vez de 'close'. Agora as estatísticas de y
+                # vêm sempre das janelas do alvo.
+                target_idx = X_train.shape[2] - 1 if append_target else 0
+                X_train_scaled, y_train_scaled, ctx_train_local = processor.normalize_local(
+                    X_train, y_train, x_mode=x_mode, y_mode=y_mode,
+                    target_idx=target_idx, target_windows=tw_train
+                )
+                X_val_scaled, y_val_scaled, _ = processor.apply_normalization_local(
+                    X_val, y_val, x_mode=x_mode, y_mode=y_mode,
+                    target_idx=target_idx, target_windows=tw_val
+                )
+                X_test_scaled, y_test_scaled, inverse_ctx_test = processor.apply_normalization_local(
+                    X_test, y_test, x_mode=x_mode, y_mode=y_mode,
+                    target_idx=target_idx, target_windows=tw_test
+                )
+                inverse_kind = "local"
+            
+            else:  # evomsn/evomsn_like
+                if norm_strategy == "evomsn":
+                    msn = EvoMSNNormalizer(
+                        window_size=window_size, horizon=steps_ahead, n_features=X_train.shape[2],
+                        target_idx=0, k_scales=int(evcfg["k_scales"]), agg=str(evcfg.get("agg", "fft")),
+                        random_state=config.get("seed", 42), predictor_type=str(evcfg.get("predictor", "linear")),
+                        short_horizon_policy=str(evcfg.get("short_horizon_policy", "window_stats")),
+                        period_scaling=str(evcfg.get("period_scaling", "per_channel")),
+                    )
+                else:
+                    msn = EvoMSNLikeNormalizer(
+                        window_size=window_size, horizon=steps_ahead, n_features=X_train.shape[2],
+                        target_idx=0, k_scales=int(evcfg["k_scales"]), agg=str(evcfg.get("agg", "fft")),
+                        random_state=config.get("seed", 42),
+                        # antes ficava no padrao e ignorava a politica configurada,
+                        # divergindo do caminho de treino para o mesmo experimento
+                        short_horizon_policy=str(evcfg.get("short_horizon_policy", "window_stats")),
+                        period_scaling=str(evcfg.get("period_scaling", "per_channel")),
+                    )
+                X_train_scaled, y_train_scaled = msn.fit(
+                    X_train, y_train, save_path=scaler_dir, target_windows=tw_train
+                )
+                if msn.degeneracy_report:
+                    logger.info(f"[FINETUNE][EvoMSN] {msn.degeneracy_report}")
+                _Xtr_tmp, _ytr_tmp, ctx_train_msn = msn.transform(X_train, None, target_windows=tw_train)
+                X_val_scaled, y_val_scaled, _ctx_val = msn.transform(X_val, y_val, target_windows=tw_val)
+                X_test_scaled, _y_dummy, ctx_test = msn.transform(X_test, None, target_windows=tw_test)
+                inverse_kind = "evomsn"
+                inverse_ctx_test = (msn, ctx_test)
+            
+            # === 8. CARREGAR MODELO E VALIDAR COMPATIBILIDADE ===
+            logger.info("[FINETUNE] Carregando modelo original...")
+            TrainerClass = TrainerFactory.get_trainer(framework, model_type)
+            trainer = TrainerClass(input_shape=X_train_scaled.shape[1:], **config)
+            
+            try:
+                trainer.load_model(model_path)
+                logger.info("[FINETUNE] ✓ Modelo carregado com sucesso")
+            except Exception as e:
+                logger.error(f"[FINETUNE] ✗ Falha ao carregar modelo: {e}")
+                raise RuntimeError(f"Não foi possível carregar o modelo original: {e}")
+            
+            # Validar compatibilidade de input_shape
+            expected_shape = X_train_scaled.shape[1:]
+            try:
+                test_input = np.zeros((1,) + expected_shape)
+                _ = trainer.predict(test_input)
+                logger.info(f"[FINETUNE] ✓ Compatibilidade validada: input_shape={expected_shape}")
+            except Exception as e:
+                logger.error(f"[FINETUNE] ✗ Incompatibilidade de shape: {e}")
+                raise RuntimeError(f"O modelo original não é compatível com os novos dados: {e}")
+            
+            # === 9. FINE-TUNING ===
+            logger.info(f"[FINETUNE] Iniciando fine-tuning: {config.get('epochs', 10)} epochs, lr={config.get('learning_rate', 0.0001)}")
+            try:
+                model = trainer.finetune(X_train_scaled, y_train_scaled, X_val_scaled, y_val_scaled, config)
+                logger.info("[FINETUNE] ✓ Fine-tuning concluído")
+            except Exception as e:
+                logger.error(f"[FINETUNE] ✗ Erro durante fine-tuning: {e}")
+                raise
+            
+            trainer.save_model(model_ft_path)
+            logger.info(f"[FINETUNE] Modelo fine-tuned salvo: {model_ft_path}")
+            
+            # === 10. MÉTRICAS ===
+            train_loss, val_loss = None, None
+            if hasattr(model, "history") and hasattr(model.history, "history"):
+                train_loss = model.history.history["loss"][-1]
+                val_loss = model.history.history["val_loss"][-1]
+            elif hasattr(trainer, "get_last_metrics"):
+                train_loss, val_loss = trainer.get_last_metrics()
+            
+            logger.info(f"[FINETUNE] Loss: train={train_loss}, val={val_loss}")
+            
+            # === 11. PREDIÇÕES E MÉTRICAS FINAIS ===
+            logger.info("[FINETUNE] Calculando métricas finais...")
+            
+            # TEST
+            y_pred_scaled_test = trainer.predict(model, X_test_scaled) if hasattr(trainer, "predict") else model.predict(X_test_scaled)
+            if inverse_kind == "global":
+                y_pred_test = processor.inverse_transform_global(y_pred_scaled_test)
+                y_test_orig = processor.inverse_transform_global(y_test_scaled)
+            elif inverse_kind == "local":
+                y_pred_test = processor.inverse_transform_local(y_pred_scaled_test, inverse_ctx_test)
+                y_test_orig = processor.inverse_transform_local(y_test_scaled, inverse_ctx_test)
+            else:
+                msn, ctx_test = inverse_ctx_test
+                _per_scale_te, y_pred_test = msn.denorm_and_ensemble(y_pred_scaled_test, ctx_test)
+                y_test_orig = y_test
+            
+            y_pred_test, y_test_orig, timestamps, n_steps = self.universal_postprocess(y_pred_test, y_test_orig, ts_test)
+            
+            # TRAIN
+            y_pred_scaled_train = trainer.predict(model, X_train_scaled) if hasattr(trainer, "predict") else model.predict(X_train_scaled)
+            if inverse_kind == "global":
+                y_pred_train = processor.inverse_transform_global(y_pred_scaled_train)
+                y_train_orig = processor.inverse_transform_global(y_train_scaled)
+            elif inverse_kind == "local":
+                y_pred_train = processor.inverse_transform_local(y_pred_scaled_train, ctx_train_local)
+                y_train_orig = processor.inverse_transform_local(y_train_scaled, ctx_train_local)
+            else:
+                _per_scale_tr, y_pred_train = msn.denorm_and_ensemble(y_pred_scaled_train, ctx_train_msn)
+                y_train_orig = y_train
+            
+            y_pred_train = np.array(y_pred_train)
+            y_train_orig = np.array(y_train_orig)
+            if y_pred_train.ndim == 1:
+                y_pred_train = y_pred_train.reshape(-1, 1)
+            if y_train_orig.ndim == 1:
+                y_train_orig = y_train_orig.reshape(-1, 1)
+            y_train_orig = y_train_orig[:, :y_pred_train.shape[1]]
+            
+            metrics_train = self._compute_basic_metrics(y_train_orig, y_pred_train)
+            metrics_test = self._compute_basic_metrics(y_test_orig, y_pred_test)
+            
+            logger.info(f"[FINETUNE] Métricas Test: RMSE={metrics_test['rmse']:.4f}, MAE={metrics_test['mae']:.4f}, R2={metrics_test['r2']:.4f}")
+            
+            # === 12. COMPARAÇÃO COM MODELO ORIGINAL ===
+            comparison = {
+                "original_run_id": original_run_id,
+                "finetune_run_id": hash_id,
+                "comparison_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            
+            if original_metrics:
+                orig_test = original_metrics.get("test", {})
+                comparison["metrics_comparison"] = {
+                    "rmse": {
+                        "original": orig_test.get("rmse"),
+                        "finetuned": metrics_test["rmse"],
+                        "delta": metrics_test["rmse"] - orig_test.get("rmse", 0),
+                        "improvement_pct": ((orig_test.get("rmse", 0) - metrics_test["rmse"]) / orig_test.get("rmse", 1)) * 100 if orig_test.get("rmse") else None
+                    },
+                    "mae": {
+                        "original": orig_test.get("mae"),
+                        "finetuned": metrics_test["mae"],
+                        "delta": metrics_test["mae"] - orig_test.get("mae", 0),
+                        "improvement_pct": ((orig_test.get("mae", 0) - metrics_test["mae"]) / orig_test.get("mae", 1)) * 100 if orig_test.get("mae") else None
+                    },
+                    "r2": {
+                        "original": orig_test.get("r2"),
+                        "finetuned": metrics_test["r2"],
+                        "delta": metrics_test["r2"] - orig_test.get("r2", 0),
+                        "improvement_pct": ((metrics_test["r2"] - orig_test.get("r2", 0)) / abs(orig_test.get("r2", 1))) * 100 if orig_test.get("r2") else None
+                    }
+                }
+                
+                # Verificar se houve melhoria
+                degradation = (
+                    metrics_test["rmse"] > orig_test.get("rmse", float('inf')) or
+                    metrics_test["mae"] > orig_test.get("mae", float('inf'))
+                )
+                
+                if degradation:
+                    logger.warning("[FINETUNE] ⚠️  PERFORMANCE DEGRADOU em relação ao modelo original!")
+                    comparison["performance_status"] = "DEGRADED"
+                else:
+                    logger.info("[FINETUNE] ✓ Performance mantida ou melhorada")
+                    comparison["performance_status"] = "IMPROVED"
+            else:
+                comparison["performance_status"] = "NO_BASELINE"
+            
+            with open(comparison_path, "w") as f:
+                json.dump(comparison, f, indent=4)
+            
+            logger.info(f"[FINETUNE] Comparação salva: {comparison_path}")
+            
+            # === 13. ARTEFATOS (CSV, GRÁFICOS) ===
+            logger.info("[FINETUNE] Gerando artefatos...")
+            metrics_readable = {
+                "MAE - Train data": metrics_train["mae"],
+                "MAE - Test data": metrics_test["mae"],
+                "RMSE - Train data": metrics_train["rmse"],
+                "RMSE - Test data": metrics_test["rmse"],
+                "MSE - Train data": metrics_train["mse"],
+                "MSE - Test data": metrics_test["mse"],
+                "R2 score - Train data": metrics_train["r2"],
+                "R2 score - Test data": metrics_test["r2"],
+            }
+            metrics_bundle = {
+                "train": metrics_train,
+                "test": metrics_test,
+                "readable": metrics_readable,
+                "n_steps": int(n_steps),
+                "window_size": int(window_size),
+                "run_id": hash_id,
+            }
+            with open(metrics_path, "w") as f:
+                json.dump(metrics_bundle, f, indent=4)
+            
+            csv_exporter = CSVExporter()
+            results_df = csv_exporter.save_predictions_to_csv(
+                timestamps=timestamps, y_test=y_test_orig, y_pred=y_pred_test,
+                steps_ahead=n_steps, output_path=csv_path
+            )
+            
+            plotter = Plotter()
+            plotter.plot_price_predictions(
+                results_df=results_df, timestamp_col="timestamp",
+                real_col="real_value", pred_col="predicted_value",
+                save_path=os.path.join(plot_dir, "price_predictions.png")
+            )
+            plotter.plot_errors_over_time(
+                y_test=y_test_orig, y_pred=y_pred_test,
+                save_path=os.path.join(plot_dir, "errors_over_time.png")
+            )
+            try:
+                plotter.plot_correlation_matrix(
+                    df=df, columns=config.get("relevant_columns"),
+                    save_path=os.path.join(plot_dir, "correlation_matrix.png")
+                )
+            except Exception:
+                pass
+            plotter.plot_histogram_of_errors(
+                y_test=y_test_orig, y_pred=y_pred_test,
+                save_path=os.path.join(plot_dir, "histogram_errors.png")
+            )
+            plotter.plot_scatter_real_vs_predicted(
+                y_test=y_test_orig, y_pred=y_pred_test,
+                save_path=os.path.join(plot_dir, "scatter_real_vs_predicted.png")
+            )
+            
+            # === 14. BANCO DE DADOS ===
+            logger.info("[FINETUNE] Salvando no banco de dados...")
+            metrics_dict = {
+                "train_loss": float(train_loss) if train_loss is not None else None,
+                "val_loss": float(val_loss) if val_loss is not None else None,
+                "n_steps": int(n_steps),
+                "window_size": int(window_size),
+                "run_id": hash_id,
+            }
+            metrics_json = json.dumps(metrics_dict, indent=4)
+            
+            ensure_db_connection()
+            fine_tune_run = FineTuningRun.create(
+                original_run=original_run_id,
+                finetune_uuid=hash_id,
+                status="finished",
+                start_time=datetime.now(),
+                end_time=datetime.now(),
+                created_at=datetime.now(),
+                updated_at=datetime.now(),
+                finetuned_model_path=model_ft_path,
+                finetune_config_path=config_path,
+                finetune_csv_metrics_path=csv_path,
+                finetune_plot_dir=plot_dir,
+                metrics_json=metrics_json,
+                framework=framework,
+                model_type=model_type,
+                seed=config.get("seed"),
+                gpu_used=Settings.USE_GPU,
+                train_loss=float(train_loss) if train_loss is not None else None,
+                val_loss=float(val_loss) if val_loss is not None else None,
+                best_epoch=int(model.history.epoch[-1]) if hasattr(model, "history") else None,
+                log=log_path
+            )
+            
+            logger.info(f"[FINETUNE] ✓ Registro salvo no banco: ID={fine_tune_run.id}")
+            logger.info("[FINETUNE] ========== FINE-TUNING CONCLUÍDO ==========")
+            logger.close()
+            
+            return {
+                "train_loss": float(train_loss) if train_loss is not None else None,
+                "val_loss": float(val_loss) if val_loss is not None else None,
+                "model_path": model_ft_path,
+                "csv_path": csv_path,
+                "metrics": metrics_bundle,
+                "metrics_path": metrics_path,
+                "comparison_path": comparison_path,
+                "comparison": comparison,
+                "run_id": hash_id,
+                "results_path": base_path,
+                "fine_tune_run_id": fine_tune_run.id,
+                "backup_path": backup_model_path,
+                "log_path": log_path
+            }
+        
+        except Exception as e:
+            logger.error(f"[FINETUNE] ✗✗✗ ERRO CRÍTICO: {type(e).__name__}: {str(e)}")
+            logger.error("[FINETUNE] Stack trace:")
+            import traceback
+            logger.error(traceback.format_exc())
+            logger.close()
+            raise
 
-        # Avaliação e métricas (igual ao train)
-        train_loss, val_loss = None, None
-        if hasattr(model, "history") and hasattr(model.history, "history"):
-            train_loss = model.history.history["loss"][-1]
-            val_loss = model.history.history["val_loss"][-1]
-        elif hasattr(trainer, "get_last_metrics"):
-            train_loss, val_loss = trainer.get_last_metrics()
-
-        # Predição e inversão dos dados para gráficos/CSV
-        if hasattr(model, "predict"):
-            y_pred_scaled = model.predict(X_test_scaled)
-        elif hasattr(trainer, "predict"):
-            y_pred_scaled = trainer.predict(model, X_test_scaled)
-        else:
-            raise RuntimeError("Seu trainer/modelo precisa de método predict")
-        processor.load_scaler(scaler_dir)
-        y_pred = processor.inverse_transform(y_pred_scaled)
-        y_test = processor.inverse_transform(y_test_scaled)
-        y_pred, y_test, timestamps, n_steps = self.universal_postprocess(y_pred, y_test, original_timestamps)
-
-        # Salva CSV + gráficos
-        csv_exporter = CSVExporter()
-        results_df = csv_exporter.save_predictions_to_csv(
-            timestamps=timestamps, y_test=y_test, y_pred=y_pred, steps_ahead=n_steps, output_path=csv_path
-        )
-        plotter = Plotter()
-        plotter.plot_price_predictions(
-            results_df=results_df,
-            timestamp_col="timestamp",
-            real_col="real_value",
-            pred_col="predicted_value",
-            save_path=os.path.join(plot_dir, "price_predictions.png")
-        )
-        plotter.plot_errors_over_time(
-            y_test=y_test, y_pred=y_pred,
-            save_path=os.path.join(plot_dir, "errors_over_time.png")
-        )
-        plotter.plot_correlation_matrix(
-            df=data_df,
-            columns=config.get("relevant_columns"),
-            save_path=os.path.join(plot_dir, "correlation_matrix.png")
-        )
-        plotter.plot_histogram_of_errors(
-            y_test=y_test,
-            y_pred=y_pred,
-            save_path=os.path.join(plot_dir, "histogram_errors.png")
-        )
-        plotter.plot_scatter_real_vs_predicted(
-            y_test=y_test,
-            y_pred=y_pred,
-            save_path=os.path.join(plot_dir, "scatter_real_vs_predicted.png")
-        )
-
-        # Salva métricas principais em JSON
-        metrics_dict = {
-            "train_loss": float(train_loss) if train_loss else None,
-            "val_loss": float(val_loss) if val_loss else None,
-            "n_steps": int(n_steps),
-            "window_size": int(window_size),
-            "run_id": hash_id,
-            # ...adicione outras métricas relevantes!
-        }
-        metrics_json = json.dumps(metrics_dict, indent=4)
-
-        # Salva registro do fine-tuning no banco
-        ensure_db_connection()
-        fine_tune_run = FineTuningRun.create(
-            original_run=original_run_id,
-            finetune_uuid=hash_id,
-            status="finished",
-            start_time=datetime.now(),  # ou pegue do início do processo
-            end_time=datetime.now(),    # ou datetime ao terminar
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
-            finetuned_model_path=model_ft_path,
-            finetune_config_path=config_path,
-            finetune_csv_metrics_path=csv_path,
-            finetune_plot_dir=plot_dir,
-            metrics_json=metrics_json,
-            framework=framework,
-            model_type=model_type,
-            seed=config.get("seed"),
-            gpu_used=Settings.USE_GPU,
-            train_loss=float(train_loss) if train_loss else None,
-            val_loss=float(val_loss) if val_loss else None,
-            best_epoch=int(model.history.epoch[-1]) if hasattr(model, "history") else None,
-            log=None  # Pode preencher com algum log de fine-tune se quiser
-        )
-
-        return {
-            "train_loss": float(train_loss) if train_loss else None,
-            "val_loss": float(val_loss) if val_loss else None,
-            "model_path": model_ft_path,
-            "csv_path": csv_path,
-            "run_id": hash_id,
-            "results_path": base_path,
-            "fine_tune_run_id": fine_tune_run.id,
-            "metrics": metrics_dict,
-        }
-
-    
+    # -------------------------
+    # LIVE RUN (único ciclo)
+    # -------------------------
     def live_run_once(
         self,
         model_path: str,
@@ -429,74 +1513,445 @@ class ModelService:
         symbol: str = "BTCUSDT",
         interval: str = "1h"
     ):
-        # 1. Carrega configs e define seed
+        # ---------- 1) Carrega config e seta seed ----------
         with open(config_path, "r") as f:
             config = json.load(f)
         seed = config.get("seed")
         if seed:
             set_seed(seed)
-        window_size = config["window_size"]
-        steps_ahead = config.get("steps_ahead", 1)
+
+        # Normalização e parâmetros principais do modelo
+        norm_strategy, scaler_type, x_mode, y_mode, evcfg = self._norm_cfg(config)
+        window_size = int(config["window_size"])
+        steps_ahead = int(config.get("steps_ahead", 1))
         relevant_columns = config["relevant_columns"]
         indicators_apply = config.get("indicators_apply", None)
         target_column = config["target_column"]
 
-        # 2. Instancia trainer/model
-        TrainerClass = TrainerFactory.get_trainer(framework, model_type)
-        trainer = TrainerClass(input_shape=(window_size, len(relevant_columns)), **config)
-        model = trainer.load_model(model_path)
-        processor = DataProcessor(window_size=window_size)
-        scaler_dir = os.path.join(os.path.dirname(os.path.dirname(model_path)), "scaler")
-        processor.load_scaler(scaler_dir)
-
-        # 3. Busca dados recentes da Binance
-        
-
+        # ---------- 2) Busca dados recentes (candle fechado) ----------
         binance = BinanceData()
-        agora = datetime.utcnow()
-        if agora.minute != 0 or agora.second != 0 or agora.microsecond != 0:
-            agora -= timedelta(hours=1)
-        delta = timedelta(minutes=agora.minute, seconds=agora.second, microseconds=agora.microsecond)
-        end_time = agora - delta
-        start_time = end_time - timedelta(hours=window_size)
-        start_str = start_time.strftime("%d %b, %Y %H:%M:%S")
-        end_str = end_time.strftime("%d %b, %Y %H:%M:%S")
-        df = binance.get_historical_data(symbol, start_str=start_str, interval=interval, end_str=end_str)
+        now = datetime.utcnow()
 
-        # Indicadores técnicos (se houver)
+        if interval == "1h":
+            end_time = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+            delta_window = timedelta(hours=window_size)
+        elif interval == "4h":
+            hour = (now.replace(minute=0, second=0, microsecond=0).hour // 4) * 4
+            end_time = now.replace(hour=hour, minute=0, second=0, microsecond=0) - timedelta(hours=4)
+            delta_window = timedelta(hours=4 * window_size)
+        elif interval == "1d":
+            end_time = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+            delta_window = timedelta(days=window_size)
+        else:
+            raise ValueError(f"Intervalo não suportado no live_run_once: {interval}")
+
+        start_time = end_time - delta_window
+        start_str = start_time.strftime("%d %b, %Y %H:%M:%S")
+        end_str   = end_time.strftime("%d %b, %Y %H:%M:%S")
+
+        df = binance.get_historical_data(symbol, start_str=start_str, interval=interval, end_str=end_str)
+        if len(df) < window_size:
+            raise RuntimeError(f"Dados insuficientes para montar janela: len(df)={len(df)} < window_size={window_size}")
+
+        # Indicadores técnicos (se usados no treino)
         if indicators_apply:
-            from utils.technical_indicators import TechnicalIndicators
             df = TechnicalIndicators.process_indicators(df, indicators_apply)
 
-        for column in relevant_columns:
-            if column in df.columns:
-                df[column] = pd.to_numeric(df[column], errors='coerce')
+        # Garante que colunas numéricas existam e estejam numéricas
+        for c in list(set(relevant_columns + [target_column])):
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        filtered_columns = [col for col in relevant_columns if col != "close"]
-        features = df[filtered_columns].values
-        window_features = features[-window_size:]
-        X_window = np.expand_dims(window_features, axis=0)
-        X_normalized, _ = processor.apply_normalization(X_window, np.zeros((1,1)))
-        X_input = X_normalized  # shape: (1, window_size, n_features)
+        # ---------- 3) Monta a janela EXATAMENTE como no treino ----------
+        # Usa apenas features (sem timestamp e sem repetir o alvo)
+        feat_no_target = [c for c in relevant_columns if c not in (target_column, "timestamp")]
 
-        # Predição
-        if hasattr(model, "predict"):
-            y_pred_scaled = model.predict(X_input)
-        elif hasattr(trainer, "predict"):
-            y_pred_scaled = trainer.predict(model, X_input)
+        # Validação de colunas
+        missing = [c for c in feat_no_target + [target_column] if c not in df.columns]
+        if missing:
+            raise RuntimeError(
+                f"Colunas ausentes no live_run: {missing}. "
+                "Verifique indicators_apply e a ordem/nomes em relevant_columns do config."
+            )
+
+        window_features = df[feat_no_target].values[-window_size:]   # (L, F)
+        X_window = np.expand_dims(window_features, axis=0)           # (1, L, F)
+
+        # A janela do alvo é sempre necessária: como canal extra de X (quando o treino
+        # incluiu) e/ou como fonte das estatísticas da normalização local.
+        target_win = df[target_column].values[-window_size:].reshape(1, window_size, 1)
+
+        # Mesma política do treino — precisa bater, senão o shape de entrada diverge do modelo.
+        append_target = self._resolve_include_target_channel(
+            self.policy_from_config(config),
+            norm_strategy=norm_strategy,
+            y_mode=y_mode,
+        )
+        if append_target:
+            X_window = np.concatenate([X_window, target_win], axis=2)   # (1, L, F+1)
+            target_idx = X_window.shape[2] - 1
         else:
-            raise RuntimeError("Trainer/modelo não possui método predict.")
+            target_idx = 0
 
-        # Inverte normalização (usando processor universal)
-        y_pred = processor.inverse_transform(y_pred_scaled)
+        # ---------- 4) Cria Trainer com o SHAPE REAL e carrega o modelo ----------
+        TrainerClass = TrainerFactory.get_trainer(framework, model_type)
+        trainer = TrainerClass(input_shape=X_window.shape[1:], **config)  # (L, C) real
+        model = trainer.load_model(model_path)
 
-        # Para multi-step, lista as previsões
+        # ---------- 5) Normalização e predição ----------
+        processor = DataProcessor(window_size=window_size, scaler_type=scaler_type)
+        scaler_dir = os.path.join(os.path.dirname(os.path.dirname(model_path)), "scaler")
+
+        if norm_strategy == "global":
+            # carrega scaler salvo no treino
+            processor.load_scaler(scaler_dir)
+            X_input, _ = processor.apply_normalization_global(X_window, np.zeros((1, steps_ahead)))
+            y_pred_scaled = model.predict(X_input) if hasattr(model, "predict") else trainer.predict(model, X_input)
+            y_pred = processor.inverse_transform_global(y_pred_scaled)
+
+        elif norm_strategy == "local":
+            # usa target_idx calculado acima
+            Xn, _y0, ctx = processor.apply_normalization_local(
+                X_window, np.zeros((1, steps_ahead)),
+                x_mode=x_mode, y_mode=y_mode, target_idx=target_idx,
+                target_windows=target_win
+            )
+            y_pred_scaled = model.predict(Xn) if hasattr(model, "predict") else trainer.predict(model, Xn)
+            y_pred = processor.inverse_transform_local(y_pred_scaled, ctx)
+
+        else:  # "evomsn" ou "evomsn_like"
+            Normalizer = EvoMSNNormalizer if norm_strategy == "evomsn" else EvoMSNLikeNormalizer
+            meta = Normalizer.load_meta(scaler_dir)
+
+            # n_features precisa bater com os canais REAIS de X_window
+            n_features = X_window.shape[2]
+
+            if norm_strategy == "evomsn":
+                msn = Normalizer(
+                    window_size=window_size,
+                    horizon=steps_ahead,
+                    n_features=n_features,
+                    target_idx=0,
+                    k_scales=meta.k_scales,
+                    agg=meta.agg,
+                    random_state=config.get("seed", 42),
+                    predictor_type=meta.predictor_type,
+                )
+            else:
+                msn = Normalizer(
+                    window_size=window_size,
+                    horizon=steps_ahead,
+                    n_features=n_features,
+                    target_idx=0,
+                    k_scales=meta.k_scales,
+                    agg=meta.agg,
+                    random_state=config.get("seed", 42),
+                )
+            msn.meta = meta
+
+            # janela do alvo para pesos do ensemble
+            target_win = df[target_column].values[-window_size:].reshape(1, window_size, 1)
+            X_in, _y, ctx = msn.transform(X_window, None, target_windows=target_win)
+
+            y_tilde = model.predict(X_in) if hasattr(model, "predict") else trainer.predict(model, X_in)
+            _per_scale, y_pred = msn.denorm_and_ensemble(y_tilde, ctx)
+
+        # ---------- 6) Empacota resposta ----------
         previsoes = [float(y_pred[0, i]) for i in range(steps_ahead)] if steps_ahead > 1 else [float(y_pred[0, 0])]
+        last_ts = df.iloc[-1]["timestamp"] if "timestamp" in df.columns else end_time
 
         return {
-            "timestamp": str(df.iloc[-1]["timestamp"]) if "timestamp" in df.columns else str(datetime.utcnow()),
+            "timestamp": str(last_ts),
             "close_real": float(df.iloc[-1][target_column]),
             "previsoes": previsoes,
             "steps_ahead": steps_ahead,
             "target_column": target_column
         }
+
+
+
+    # --- NOVO: util para produto cartesiano do grid ---
+    def _cartesian_product(self, grid_dict: dict):
+        """
+        Recebe {'LR':[0.001,0.0005], 'BATCH':[16,32]} e gera dicts
+        [{'LR':0.001,'BATCH':16}, {'LR':0.001,'BATCH':32}, ...]
+        """
+        from itertools import product
+        keys = list(grid_dict.keys())
+        values = [grid_dict[k] for k in keys]
+        for combo in product(*values):
+            yield dict(zip(keys, combo))
+
+    # --- mapeia chaves do JSON-unificado (UPPER) -> nomes internos do config ---
+    def _grid_key_mapping(self):
+        return {
+            # dados / split
+            "START_DATE": "start_date",
+            "END_DATE": "end_date",
+            "TRAIN_SIZE": "train_size",
+            "VALIDATION_SPLIT": "validation_split",
+            "STEPS_AHEAD": "steps_ahead",
+            "TARGET_COLUMN": "target_column",
+            "RELEVANT_COLUMNS": "relevant_columns",
+            "INDICATORS_APPLY": "indicators_apply",
+
+            # device
+            "USE_GPU": "use_gpu",
+            "GPU_INDEX": "gpu_index",
+            "PARALLEL": "parallel",
+
+            # modelo/framework (podem varrer)
+            "FRAMEWORK": "framework",
+            "MODEL_TYPE": "model_type",
+
+            # seeds
+            "SEED": "seed",
+
+            # normalização (dict fixo ou lista de dicts)
+            "NORMALIZATION": "normalization",
+
+            # hiperparâmetros comuns
+            "WINDOW_SIZE": "window_size",
+            "BATCH_SIZE": "batch_size",
+            "EPOCHS": "epochs",
+            "PATIENCE": "patience",
+            "LEARNING_RATE": "learning_rate",
+            "DROPOUT": "dropout",
+            "OPTIMIZER": "optimizer",
+            "LOSS_FUNCTION": "loss_fn",
+            "OUTPUT_UNITS": "output_units",  # opcional
+
+            # LSTM
+            "LAYERS_CONFIG": "layers_config",
+            "BIDIRECTIONAL": "bidirectional",
+            "L1_REGULARIZATION": "l1_reg",
+            "L2_REGULARIZATION": "l2_reg",
+            "ACTIVATION_FUNCTION": "activation_functions",
+            "RECURRENT_DROPOUT": "recurrent_dropout",
+
+            # Transformer
+            "NUM_LAYERS": "num_layers",
+            "EMBED_DIM": "embed_dim",
+            "NUM_HEADS": "num_heads",
+            "FF_DIM": "ff_dim",
+            "ACTIVATION": "activation",
+        }
+    
+    @staticmethod
+    def example_unified_grid_json():
+        """
+        JSON UNIFICADO: qualquer campo pode ser escalar (fixo) ou lista (varredura).
+        """
+        return {
+          "grid_id": "grid_demo",
+          "framework": ["keras", "pytorch"],                 # varrer frameworks
+          "model_type": ["lstm"],                            # pode varrer modelos também
+
+          # Janela temporal (varrer ranges ou fixar)
+          "START_DATE": ["2017-08-18 00:00:00"],             # lista de 1 => vira fixo
+          "END_DATE":   ["2025-01-19 23:59:59"],
+
+          # Split
+          "TRAIN_SIZE": [0.7],
+          "VALIDATION_SPLIT": [0.15],
+          "STEPS_AHEAD": [1, 3],                             # varrer saídas (1 e 3)
+
+          # Dados/Features
+          "TARGET_COLUMN": ["close"],
+          "RELEVANT_COLUMNS": [
+            ["close","open","high","low","volume"],          # set A
+            ["close","volume"]                               # set B
+          ],
+
+          # Indicadores (pode ser dict fixo ou varrer listas de dict)
+          "INDICATORS_APPLY": [
+            {},                                              # sem indicadores
+            {"sma": [{"period": 14, "col_name": "sma_14"}]}
+          ],
+
+          # Normalização: dict fixo OU lista de dicts
+          "NORMALIZATION": [
+            {"strategy": "global", "scaler_type": "robust"},
+            {"strategy": "local", "x_mode": "zscore", "y_mode": "relative_last"},
+            {"strategy": "evomsn", "evomsn_k_scales": 4, "evomsn_predictor": "linear"}
+          ],
+
+
+          # Device
+          "USE_GPU": [False],
+          "GPU_INDEX": ["0 - /physical_device:GPU:0"],
+          "PARALLEL": {
+            "enabled": True,
+            "backend": "process",
+            "max_workers_per_gpu": 2,
+            "safety_ratio": 0.20,
+            "cpu_workers": 2
+            },
+
+          # Seeds (inteiros ou "RANDOM")
+          "SEED": ["RANDOM"],
+
+          # Hiperparâmetros
+          "WINDOW_SIZE": [72, 96],
+          "BATCH_SIZE": [16, 32],
+          "EPOCHS": [50],
+          "PATIENCE": [5, 10],
+          "LEARNING_RATE": [0.001, 0.0005],
+          "DROPOUT": [0.2, 0.3],
+          "OPTIMIZER": ["Adam"],
+          "LOSS_FUNCTION": ["mean_squared_error"],
+
+          # Específicos LSTM
+          "LAYERS_CONFIG": [[128,64], [64,64]],
+          "BIDIRECTIONAL": [False, True],
+          "ACTIVATION_FUNCTION": ["tanh", "relu"],
+          "RECURRENT_DROPOUT": [0.0],
+
+          # Específicos Transformer (serão ignorados se model_type != transformer)
+          "NUM_LAYERS": [2, 3],
+          "EMBED_DIM": [32],
+          "NUM_HEADS": [2, 4],
+          "FF_DIM": [64, 128],
+          "ACTIVATION": ["relu"]
+        }
+
+    # --- lista com >1 item => varredura; dict => fixo; lista de dicts/lista de listas => varredura ---
+    def _is_sweep_value(self, v):
+        if isinstance(v, list):
+            if len(v) == 0:
+                return False
+            if len(v) == 1:
+                return False
+            return True
+        return False
+
+    # --- quebra um JSON unificado em (framework, model_type, base_cfg, grid-eixos) ---
+    def _split_unified_grid_config(self, unified: dict):
+        unified = (unified or {}).copy()
+        grid_id = unified.pop("grid_id", None)
+
+        mapping = self._grid_key_mapping()
+        base_cfg, grid = {}, {}
+
+        # percorre todo o JSON: se for lista com 2+ => varredura; senão vira fixo
+        for raw_k, v in unified.items():
+            k = raw_k.upper()
+            dst = mapping.get(k, raw_k.lower())
+
+            # PARALLEL: aceita apenas dict fixo (não varrer)
+            if dst == "parallel":
+                if isinstance(v, dict):
+                    base_cfg["parallel"] = v
+                else:
+                    raise ValueError("PARALLEL deve ser um objeto/dict.")
+                continue
+
+            # NORMALIZATION aceita dict fixo ou lista de dicts (varredura)
+            if dst == "normalization":
+                if self._is_sweep_value(v):
+                    grid["NORMALIZATION"] = v
+                else:
+                    if isinstance(v, list) and len(v) == 1:
+                        v = v[0]
+                    base_cfg["normalization"] = v
+                continue
+
+            # SEED aceita int, "RANDOM" ou lista (com int/"RANDOM")
+            if dst == "seed":
+                if self._is_sweep_value(v):
+                    grid["SEED"] = v
+                else:
+                    if isinstance(v, list) and len(v) == 1:
+                        v = v[0]
+                    base_cfg["seed"] = v
+                continue
+
+            # framework/model_type: também podem varrer
+            if dst in ("framework", "model_type"):
+                if self._is_sweep_value(v):
+                    grid[k] = v   # manter em UPPER para o laço
+                else:
+                    if isinstance(v, list) and len(v) == 1:
+                        v = v[0]
+                    base_cfg[dst] = v
+                continue
+
+            # demais campos (datas, features, hypers...)
+            if self._is_sweep_value(v):
+                grid[k] = v
+            else:
+                if isinstance(v, list) and len(v) == 1:
+                    v = v[0]
+                base_cfg[dst] = v
+
+        if grid_id:
+            base_cfg["grid_id"] = grid_id
+
+        return base_cfg, grid
+
+    # --- aplica params de um combo sobre a base, resolvendo seed e output_units ---
+    def _apply_params_and_seed_unified(self, base_cfg: dict, params: dict) -> dict:
+        # Copia profunda: com copia rasa, os dicionarios aninhados (normalization,
+        # parallel, indicators_apply) eram compartilhados entre as combinacoes e a
+        # escrita de uma vazava para as seguintes.
+        cfg = copy.deepcopy(base_cfg)
+        mapping = self._grid_key_mapping()
+
+        for k, v in params.items():
+            dst = mapping.get(k, k.lower())
+
+            if dst == "seed":
+                if isinstance(v, str) and v.strip().upper() == "RANDOM":
+                    cfg.pop("seed", None)
+                else:
+                    cfg["seed"] = int(v)
+                continue
+
+            if dst == "normalization":
+                if not isinstance(v, dict):
+                    raise ValueError("Cada item de NORMALIZATION no grid deve ser um dict.")
+                cfg["normalization"] = v
+                continue
+
+            # 👇 NOVO: normalização de GPU_INDEX (string -> int)
+            if dst == "gpu_index":
+                if isinstance(v, str):
+                    vv = v.strip()
+                    # tenta pegar o inteiro antes do primeiro espaço ou hífen
+                    try:
+                        vv_int = int(vv.split()[0].split("-")[0])
+                        cfg["gpu_index"] = vv_int
+                    except Exception:
+                        cfg["gpu_index"] = v  # deixa como está se não der pra converter
+                else:
+                    cfg["gpu_index"] = v
+                continue
+
+            cfg[dst] = v
+
+        if "steps_ahead" in cfg:
+            cfg["output_units"] = int(cfg["steps_ahead"])
+
+        # Um run_id por combinacao: herdar o do config base fazia todas gravarem
+        # modelo, metricas e hiperparametros na MESMA pasta (e, em paralelo, ao
+        # mesmo tempo). O prefixo do usuario e preservado para agrupar.
+        prefixo = base_cfg.get("run_id")
+        sufixo = uuid.uuid4().hex[:8]
+        cfg["run_id"] = f"{prefixo}_{sufixo}" if prefixo else sufixo
+        return cfg
+
+    # ------------------------------------------------------------------
+    # Busca em grade — implementada em optimization/grid_search.py
+    # Mantida aqui como fachada para nao quebrar chamadores e testes.
+    # ------------------------------------------------------------------
+    SCORES_VALIDOS = _grid.SCORES_VALIDOS
+    CONJUNTOS_VALIDOS = _grid.CONJUNTOS_VALIDOS
+
+    validar_score = staticmethod(_grid.validar_score)
+    extrair_score = staticmethod(_grid.extrair_score)
+    impasse_no_escalonador = staticmethod(_grid.impasse_no_escalonador)
+
+    def grid_search_unified(self, unified_config: dict, *, score: str = "rmse",
+                            score_on: str = "validation"):
+        """Delega para `optimization.grid_search.run_grid_search`."""
+        return _grid.run_grid_search(self, unified_config, score=score, score_on=score_on)

@@ -1,0 +1,13 @@
+# Ambientes virtuais e sobras locais
+src/venv/
+src/venv.*/
+venv/
+.venv/
+*.log
+.vscode/
+.idea/
+
+# Credenciais: nunca versionar nada alem do exemplo
+.env
+.env.*
+!.env.example
