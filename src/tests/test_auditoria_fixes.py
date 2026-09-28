@@ -317,14 +317,33 @@ def test_postprocess_recusa_timestamps_incompativeis():
 
 
 # --------------------------------------------------------------------- A5
-def test_grid_legado_removido():
-    """A5: a classe antiga ignorava window_size e maximizava o erro."""
-    caminho = os.path.join(SRC, "optimization", "grid_search.py")
-    assert not os.path.exists(caminho), (
-        "optimization/grid_search.py deveria ter sido removido: ignorava window_size "
-        "e escolhia a pior configuração quando a métrica não se chamava 'loss'"
+def test_grid_legado_nao_voltou():
+    """A5: a classe antiga ignorava window_size e maximizava o erro.
+
+    O que precisa ser garantido nao e a ausencia do caminho
+    `optimization/grid_search.py` — ele hoje hospeda a implementacao correta,
+    extraida de ModelService — e sim que a classe `GridSearch` legada, com
+    aqueles dois defeitos, nao esteja de volta.
+    """
+    import optimization.grid_search as g
+
+    assert not hasattr(g, "GridSearch"), (
+        "a classe GridSearch legada voltou: ignorava window_size e escolhia a pior "
+        "configuracao quando a metrica nao se chamava 'loss'"
     )
-    print("OK  grid search legado removido do repositório")
+    assert callable(getattr(g, "run_grid_search", None)), \
+        "a implementacao atual (run_grid_search) deveria estar neste modulo"
+
+    # o defeito de ordenacao: escolher pelo erro exige minimizar, nao maximizar
+    fonte = open(os.path.join(SRC, "optimization", "grid_search.py"), encoding="utf-8").read()
+    assert 'scoring' not in fonte or 'loss' not in fonte.split('scoring')[0][-200:], \
+        "reaparece a ordenacao condicionada ao nome da metrica"
+
+    # e a selecao continua ancorada na validacao, nao no teste
+    assert 'score_on: str = "validation"' in fonte, \
+        "o padrao de score_on saiu da validacao"
+
+    print("OK  grid legado nao voltou; implementacao atual no modulo proprio")
 
 
 if __name__ == "__main__":
