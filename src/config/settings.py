@@ -93,11 +93,15 @@ def set_cuda_pytorch(gpu_index=0):
 
 
 class Settings:
-    USER_DB = os.getenv("USER_DB")
-    PASSWORD_DB = os.getenv("PASSWORD_DB")
-    HOST_DB = os.getenv("HOST_DB")
-    PORT_DB = os.getenv("PORT_DB")
-    NAME_DB = os.getenv("NAME_DB")
+    # Defaults para que importar o pacote nao dependa de um .env presente.
+    # database/model_base.py constroi o MySQLDatabase em tempo de import e fazia
+    # int(PORT_DB) com None, quebrando qualquer import sem .env — no CI, por exemplo.
+    # peewee nao conecta na construcao, so quando a primeira consulta acontece.
+    USER_DB = os.getenv("USER_DB", "root")
+    PASSWORD_DB = os.getenv("PASSWORD_DB", "")
+    HOST_DB = os.getenv("HOST_DB", "127.0.0.1")
+    PORT_DB = os.getenv("PORT_DB", "3306")
+    NAME_DB = os.getenv("NAME_DB", "nahas")
     
     EMAIL_SMTP = os.getenv("EMAIL_SMTP")
     EMAIL_PORT = os.getenv("EMAIL_PORT")
