@@ -202,26 +202,43 @@ a inferência montou a janela com o número de canais correto e rodou até a pre
 
 ## Segunda rodada: achados de 28/09
 
-### Credenciais no `.env.example` (crítico)
+### `.env.example`: verificação de credenciais — nada vazou
 
-`src/.env.example` é versionado desde 2023 e continha valores nos campos sensíveis, não
-placeholders. Comparação por hash contra `src/.env` e `src/.env.remote-backup` confirmou
-que **`SERVER_MT5` era idêntico ao valor real em uso**; os demais campos
-(`PASSWORD_DB`, `USER_DB`, `NAME_DB`, `EMAIL_USER`, `EMAIL_PASSWORD`) tinham valores que
-não batiam com o `.env` atual, mas também não eram placeholders — possivelmente
-credenciais antigas.
+`src/.env.example` é versionado desde 2023. Uma primeira triagem automática, por entropia
+e por lista de palavras-guia (`seu`, `sua`, `your`, `example`, `xxx`), marcou vários campos
+como possíveis credenciais reais e chegou a recomendar rotação de senhas. **Essa conclusão
+estava errada.**
 
-Todos os 15 campos passaram a conter placeholders explícitos (`<senha_do_banco>` e
-similares), com cabeçalho avisando que o arquivo é versionado. `HOST_DB`, `PORT_DB`,
-`EMAIL_PORT` e os hosts de provedor ficaram com valores de exemplo neutros.
+A inspeção direta dos valores, nas 15 versões históricas de `*.env.example` (incluindo as
+cópias em `old/`, `src_old/`, `teste1/` e `teste2/`), mostrou que os campos sensíveis
+continham placeholders escritos em português — `name banco`, `username banco`,
+`passowrd banco`, `host banco`, `email usuario`, `senha email`. Não casavam com o padrão
+de placeholder esperado, mas são descrições, não segredos.
 
-**Isto corrige apenas o estado atual.** Os valores antigos continuam recuperáveis no
-histórico do Git, em vários commits desde 2023. Antes de tornar o repositório público é
-preciso, além desta correção:
+Valores genuínos presentes:
 
-1. **rotacionar o que era real** — senha do banco, senha de e-mail e credenciais MT5;
-2. **decidir sobre o histórico** — reescrevê-lo (`git filter-repo`, que troca todos os
-   hashes e invalida clones existentes) ou publicar um repositório novo com commit único.
+| campo | valor | natureza |
+|---|---|---|
+| `EMAIL_SMTP`, `EMAIL_IMAP` | `smtp.gmail.com`, `imap.gmail.com` | hosts públicos de provedor |
+| `EMAIL_PORT` | `587` | porta padrão |
+| `SERVER_MT5` | hostname público da corretora | presente em 10 versões |
+
+`LOGIN_MT5`, `PASSWORD_MT5`, `BINANCE_API_KEY` e `BINANCE_API_SECRET_KEY` foram
+placeholders em todas as versões: nada capaz de movimentar dinheiro ou autenticar em conta
+alguma entrou no repositório em três anos.
+
+**Conclusão: não houve vazamento de credencial e não há nada a rotacionar.**
+
+O arquivo foi sanitizado de todo modo, por dois motivos independentes do incidente que não
+houve: placeholders descritivos podem ser confundidos com valores reais — foi exatamente o
+que aconteceu nesta auditoria — e o hostname da corretora é divulgação desnecessária num
+repositório público. Os 15 campos passaram a placeholders inequívocos no formato
+`<senha_do_banco>`, com cabeçalho avisando que o arquivo é versionado. `HOST_DB`,
+`PORT_DB`, `EMAIL_PORT` e os hosts de provedor ficaram com valores de exemplo neutros.
+
+A observação da seção **Segurança** sobre `src/.env.remote-backup` permanece válida: esse
+arquivo, que nunca foi versionado, contém credenciais reais e passou a ser coberto pelo
+`.gitignore`.
 
 ### Vazamento temporal no preenchimento de indicadores
 
