@@ -1,7 +1,6 @@
 import pandas as pd
 from peewee import Model
 from typing import List
-import os
 
 class CSVToDatabase:
     """

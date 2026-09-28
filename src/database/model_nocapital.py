@@ -4,7 +4,7 @@ from peewee import (
 import pandas as pd
 import json
 
-from database.model_base import BaseModel, db
+from database.model_base import BaseModel
 
 # JSONField para MySQL 5.7+
 try:

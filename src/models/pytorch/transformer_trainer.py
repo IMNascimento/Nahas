@@ -4,7 +4,6 @@ import torch.optim as optim
 from models.base.base_trainer import BaseTrainer
 from utils.validation import DataValidator
 import os
-import numpy as np
 
 class TransformerEncoderBlock(nn.Module):
     def __init__(self, embed_dim, num_heads, ff_dim, dropout=0.1, activation="relu"):

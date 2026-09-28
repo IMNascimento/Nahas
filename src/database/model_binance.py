@@ -1,6 +1,6 @@
 from peewee import FloatField, DateTimeField
 import pandas as pd
-from database.model_base import BaseModel, db
+from database.model_base import BaseModel
 
 # Defina o modelo para cotações horárias
 class HourlyQuoteBitcoin(BaseModel):

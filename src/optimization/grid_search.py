@@ -91,7 +91,6 @@ def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
 
     par = (base_cfg.get("parallel") or {})
     enabled = bool(par.get("enabled", False))
-    backend = str(par.get("backend", "process")).lower()
     max_workers_per_gpu = int(par.get("max_workers_per_gpu", 1))
     safety_ratio = float(par.get("safety_ratio", 0.20))
     cpu_workers = int(par.get("cpu_workers", 1))
@@ -254,7 +253,7 @@ def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
                     print(f"[GRID] Progresso: {completed}/{len(combos)} | {len(running)} rodando | {len(pending)} pendentes", flush=True)
 
     # Salvar resultados
-    print(f"\n[GRID] Salvando resultados...", flush=True)
+    print("\n[GRID] Salvando resultados...", flush=True)
     
     summary_path = os.path.join(grid_root, "grid_summary.json")
     with open(summary_path, "w") as f:

@@ -1,4 +1,4 @@
-from database.model_nahas import db 
+from database.model_base import db  # origem do objeto; antes vinha via model_nahas
 
 def ensure_db_connection():
     """
@@ -15,6 +15,6 @@ def ensure_db_connection():
         print("[WARN] Reconectando ao banco devido a erro:", e)
         try:
             db.close()
-        except:
+        except Exception:
             pass
         db.connect(reuse_if_open=True)

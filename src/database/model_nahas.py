@@ -1,6 +1,6 @@
 from peewee import FloatField, DateTimeField, AutoField, CharField, TextField, ForeignKeyField, IntegerField, BooleanField
 from datetime import datetime
-from database.model_base import BaseModel, db
+from database.model_base import BaseModel
 
 
 class TrainingRun(BaseModel):

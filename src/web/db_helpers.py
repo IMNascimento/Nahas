@@ -40,7 +40,7 @@ def list_all_models(framework=None, model_type=None, status="finished"):
     ensure_db_connection()
     try:
         return _query_once()
-    except (InternalError, OperationalError) as e:
+    except (InternalError, OperationalError):
         # 2) conexão pode ter ficado inválida (comum após ProcessPool)
         try:
             if not db.is_closed():

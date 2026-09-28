@@ -83,7 +83,7 @@ class TensorFlowLSTMTrainer(BaseTrainer):
             self.build_model()
         early_stopping = tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=self.patience, restore_best_weights=True)
         callbacks = [early_stopping] + (self.callbacks or [])
-        history = self.model.fit(
+        self.model.fit(
             X_train, y_train,
             validation_data=(X_val, y_val),
             epochs=self.epochs,

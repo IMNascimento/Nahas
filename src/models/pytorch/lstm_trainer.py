@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
-import numpy as np
 
 class LSTMModel(nn.Module):
     def __init__(

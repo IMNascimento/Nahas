@@ -1,6 +1,5 @@
 import copy
 import os
-import time
 import uuid
 from datetime import datetime, timedelta
 import numpy as np
@@ -10,7 +9,7 @@ import random
 import signal
 from contextlib import contextmanager
 
-from database.model_nahas import TrainingRun, FineTuningRun, db, GridResult
+from database.model_nahas import TrainingRun, FineTuningRun
 from database.model_nocapital import PriceHistory
 from peewee import fn
 from services.trainer_factory import TrainerFactory
@@ -26,9 +25,7 @@ from data.evomsn_normalizer import EvoMSNNormalizer, EvoMSNLikeNormalizer
 from utils.baselines import evaluate_against_baselines
 import optimization.grid_search as _grid
 
-import concurrent.futures
-from typing import Any, Dict, List, Tuple
-from utils.capacity_train import pick_gpu_for_job, estimate_job_mem_bytes 
+from typing import Any, Dict, Tuple
 
 
 # -------------------------
@@ -552,7 +549,7 @@ class ModelService:
         with open(config_path, "w") as f:
             json.dump(config, f, indent=4)
 
-        metadata_path = self._save_model_metadata(base_path, model_id_info['metadata'], config)
+        self._save_model_metadata(base_path, model_id_info['metadata'], config)
 
         # -------------------------
         # 1) Dados
@@ -652,7 +649,7 @@ class ModelService:
             X_train, y_train = X_all[sl["train"]], y_all[sl["train"]]
             X_val,   y_val   = X_all[sl["val"]],   y_all[sl["val"]]
             X_test,  y_test  = X_all[sl["test"]],  y_all[sl["test"]]
-            ts_train, ts_val, ts_test = ts_all[sl["train"]], ts_all[sl["val"]], ts_all[sl["test"]]
+            _ts_train, _ts_val, ts_test = ts_all[sl["train"]], ts_all[sl["val"]], ts_all[sl["test"]]
             tw_train, tw_val, tw_test = tw_all[sl["train"]], tw_all[sl["val"]], tw_all[sl["test"]]
 
             print(f"[SPLIT] train={X_train.shape} val={X_val.shape} test={X_test.shape}")
@@ -869,7 +866,8 @@ class ModelService:
 
             inv_fn = None
             if inverse_kind == "local":
-                inv_fn = lambda a: processor.inverse_transform_local(a, inverse_ctx_test)
+                def inv_fn(a):
+                    return processor.inverse_transform_local(a, inverse_ctx_test)
             elif inverse_kind == "global":
                 inv_fn = processor.inverse_transform_global
 
@@ -1193,7 +1191,7 @@ class ModelService:
             X_train, y_train = X_all[sl["train"]], y_all[sl["train"]]
             X_val,   y_val   = X_all[sl["val"]],   y_all[sl["val"]]
             X_test,  y_test  = X_all[sl["test"]],  y_all[sl["test"]]
-            ts_train, ts_val, ts_test = ts_all[sl["train"]], ts_all[sl["val"]], ts_all[sl["test"]]
+            _ts_train, _ts_val, ts_test = ts_all[sl["train"]], ts_all[sl["val"]], ts_all[sl["test"]]
             tw_train, tw_val, tw_test = tw_all[sl["train"]], tw_all[sl["val"]], tw_all[sl["test"]]
 
             logger.info(f"[FINETUNE] Split: train={X_train.shape}, val={X_val.shape}, test={X_test.shape}")

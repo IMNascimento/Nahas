@@ -48,16 +48,19 @@ def _cast_atom(s):
     if not isinstance(s, str):
         return s
     v = s.strip()
-    if v.lower() == "true":  return True
-    if v.lower() == "false": return False
-    if v.upper() == "RANDOM": return "RANDOM"
+    if v.lower() == "true":
+        return True
+    if v.lower() == "false":
+        return False
+    if v.upper() == "RANDOM":
+        return "RANDOM"
     try:
         return int(v)
-    except:
+    except (TypeError, ValueError):
         pass
     try:
         return float(v)
-    except:
+    except (TypeError, ValueError):
         pass
     return v
 
