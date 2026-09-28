@@ -144,6 +144,21 @@ def test_politica_legacy_reproduz_quatro_canais():
     print(f"OK  configuração legacy roda: rmse_test={out['metrics']['test']['rmse']:.4f}")
 
 
+def test_config_salvo_registra_a_politica_do_canal():
+    """M4: o config gravado precisa dizer a politica, senao a inferencia adivinha."""
+    import glob
+    import json as _json
+
+    out = _treina("politica", {"strategy": "global", "scaler_type": "minmax"})
+    cfgs = glob.glob(os.path.join(os.path.dirname(os.path.dirname(out["model_path"])),
+                                  "hiperparams", "*.json"))
+    assert cfgs, "config do run nao foi salvo"
+    salvo = _json.load(open(cfgs[0], encoding="utf-8"))
+    assert "include_target_channel" in salvo, "politica ausente do config salvo"
+    assert ModelService.policy_from_config(salvo) == salvo["include_target_channel"]
+    print(f"OK  config salvo registra include_target_channel={salvo['include_target_channel']!r}")
+
+
 def _limpa_artefatos():
     from config.settings import BASE_DIR
     alvo = os.path.join(BASE_DIR, "results", "itest")

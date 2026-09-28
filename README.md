@@ -285,8 +285,11 @@ Declaradas aqui de propósito, para que sejam lidas antes de serem descobertas.
 - **Conjunto de features entre estratégias.** No modo `legacy`, a normalização por janela recebe a
   série do alvo como canal extra de `X` e as demais estratégias não. Isso confunde o efeito da
   normalização com o efeito daquele canal. A chave `include_target_channel` (`equalized`, `never`,
-  `legacy`) e o script `src/experiments/run_confound_matrix.py` existem para medir esse efeito; a
-  medição ainda não foi concluída.
+  `legacy`) e o script `src/experiments/run_confound_matrix.py` medem esse efeito. Primeira medição,
+  BTCUSDT, uma semente, 10 épocas: dar o fechamento ao braço global reduz o erro dele em 34% (4701
+  para 3100 de RMSE) e tirá-lo do braço local piora 17% (343 para 401). Com features iguais dos dois
+  lados a vantagem da normalização por janela permanece, em 9,0 vezes com cinco canais e 11,7 vezes
+  com quatro. Detalhes em [CORRECOES_AUDITORIA.md](CORRECOES_AUDITORIA.md).
 - **Degenerescência multi-escala sob horizonte unitário.** Com `H = 1`, a dispersão do alvo por
   fatia é nula por construção e a saída da rede é anulada na desnormalização. A política
   `short_horizon_policy` (`window_stats`, `legacy`, `error`) trata o caso; os resultados publicados

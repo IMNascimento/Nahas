@@ -78,6 +78,21 @@ def _prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     return df
 
+def outras_fontes(symbol: str, interval: str, exchange: str, source: str):
+    """Combinacoes (source, exchange, linhas) ja gravadas para o par, fora a pedida."""
+    try:
+        consulta = (PriceHistory
+                    .select(PriceHistory.source, PriceHistory.exchange,
+                            fn.COUNT(PriceHistory.id).alias("n"))
+                    .where((PriceHistory.symbol == symbol)
+                           & (PriceHistory.interval == interval))
+                    .group_by(PriceHistory.source, PriceHistory.exchange))
+        return [(r["source"], r["exchange"], r["n"]) for r in consulta.dicts()
+                if not (r["source"] == source and r["exchange"] == exchange)]
+    except Exception:
+        return []
+
+
 def fetch_and_upsert_pair(symbol: str, interval: str,
                           exchange: str = EXCHANGE_DEFAULT,
                           source: str = SOURCE_DEFAULT) -> int:
@@ -98,6 +113,17 @@ def fetch_and_upsert_pair(symbol: str, interval: str,
         start_dt = last_ts + INTERVAL_DELTAS[interval]
         start_str = start_dt.strftime("%d %b, %Y %H:%M:%S")
     else:
+        # `source` entra na chave unica e no filtro do ultimo timestamp. Se a tabela
+        # ja tem a serie gravada sob OUTRO source, o codigo conclui que nao ha nada,
+        # rebaixa o historico inteiro e cria uma segunda copia completa.
+        outras = outras_fontes(symbol, interval, exchange, source)
+        if outras:
+            print(
+                f"[AVISO] {symbol} {interval}: nao ha linhas com source={source!r}, "
+                f"mas existem {outras}. O historico sera baixado do inicio e "
+                f"gravado como uma SEGUNDA copia. Use o mesmo source das linhas "
+                f"existentes para completar em vez de duplicar."
+            )
         # "Desde o início" da Binance:
         # Usar uma data bem antiga garante cobertura (BTC/USDT ~2017, ETH/USDT ~2017)
         start_str = "1 Jan, 2015 00:00:00"

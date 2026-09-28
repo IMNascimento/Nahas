@@ -103,6 +103,54 @@ def test_config_liga_a_escala_de_periodos():
     print("OK  evomsn_period_scaling chega ao normalizador")
 
 
+def _fixture_msn(L=48, C=3, n=120):
+    t = np.arange(L + n)
+    preco = 100 + np.cumsum(RNG.normal(0, 0.5, L + n)) + 3 * np.sin(2 * np.pi * t / 24.0)
+    X = np.zeros((n, L, C))
+    for i in range(n):
+        X[i, :, 0] = preco[i:i + L]
+        X[i, :, 1] = preco[i:i + L] + RNG.normal(0, 0.2, L)
+        X[i, :, 2] = RNG.uniform(1e3, 5e3, L)
+    y = preco[L:L + n].reshape(-1, 1)
+    return X, y, X[:, :, [0]]
+
+
+def test_evomsn_e_like_coincidem_sob_horizonte_unitario():
+    """Com H = 1 e window_stats, as duas variantes viram a mesma coisa.
+
+    Todas as escalas sao degeneradas, entao a referencia vem da janela do alvo em
+    todas elas e os preditores auxiliares, unica diferenca entre as classes, nunca
+    sao chamados. Documentado porque a coincidencia exata dos numeros, observada no
+    pre-teste com dados reais, e consequencia do desenho, nao erro.
+    """
+    from data.evomsn_normalizer import EvoMSNLikeNormalizer
+
+    X, y, tw = _fixture_msn()
+    comum = dict(window_size=X.shape[1], horizon=1, n_features=X.shape[2],
+                 target_idx=0, k_scales=2, random_state=7)
+
+    cheio = EvoMSNNormalizer(**comum, short_horizon_policy="window_stats")
+    like = EvoMSNLikeNormalizer(**comum, short_horizon_policy="window_stats")
+    cheio.fit(X, y, target_windows=tw)
+    like.fit(X, y, target_windows=tw)
+    _, _, ctx_cheio = cheio.transform(X, y, target_windows=tw)
+    _, _, ctx_like = like.transform(X, y, target_windows=tw)
+
+    assert np.allclose(ctx_cheio["phi_hat_stack"], ctx_like["phi_hat_stack"], atol=1e-12)
+    assert np.allclose(ctx_cheio["xi_hat_stack"], ctx_like["xi_hat_stack"], atol=1e-12)
+
+    # sob legacy, os preditores voltam a ser usados e as duas divergem
+    cheio_l = EvoMSNNormalizer(**comum, short_horizon_policy="legacy")
+    like_l = EvoMSNLikeNormalizer(**comum, short_horizon_policy="legacy")
+    cheio_l.fit(X, y, target_windows=tw)
+    like_l.fit(X, y, target_windows=tw)
+    _, _, ctx_cl = cheio_l.transform(X, y, target_windows=tw)
+    _, _, ctx_ll = like_l.transform(X, y, target_windows=tw)
+    assert not np.allclose(ctx_cl["phi_hat_stack"], ctx_ll["phi_hat_stack"], atol=1e-6), \
+        "sob legacy as duas variantes deveriam divergir"
+    print("OK  EvoMSN e EvoMSN-like coincidem sob H=1 com window_stats, e divergem sob legacy")
+
+
 # --------------------------------------------------------------------- M4
 def test_config_antigo_assume_politica_legacy():
     """M4: config salvo antes da chave existir descreve um modelo legacy."""
@@ -111,6 +159,22 @@ def test_config_antigo_assume_politica_legacy():
     assert ModelService.policy_from_config({"include_target_channel": "equalized"}) == "equalized"
     assert ModelService.policy_from_config({"include_target_channel": "never"}) == "never"
     print("OK  config sem a chave resolve para legacy")
+
+
+def test_mensagem_sem_dados_aponta_o_filtro():
+    """M10: a causa usual e divergencia de source/exchange, nao ausencia de historico."""
+    msg = ModelService.mensagem_sem_dados(
+        "BTCUSDT", "1h", "USDT", "BINANCE", "binance_api",
+        "2017-08-18 00:00:00", "2024-11-11 23:59:59",
+        [("binance", "BINANCE", 79767)],
+    )
+    assert "source='binance_api'" in msg, msg
+    assert "source='binance'" in msg and "79767" in msg, msg
+
+    vazio = ModelService.mensagem_sem_dados(
+        "XPTOUSDT", "1h", "USDT", "BINANCE", "binance", "a", "b", [])
+    assert "independentemente de source/exchange" in vazio, vazio
+    print("OK  mensagem de 'sem dados' lista o que existe na tabela")
 
 
 # --------------------------------------------------------------------- M2

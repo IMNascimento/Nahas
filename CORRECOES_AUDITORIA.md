@@ -101,14 +101,115 @@ estavam instalados no ambiente dos experimentos, em `requirements-optional.txt`.
 - `src/tests/run_all.py`: roda as três suítes em sequência.
 - `.github/workflows/ci.yml`: lint, testes e auditoria de dependências a cada push.
 
+### Divergência de `source` entre o banco e o sync
+
+Encontrado durante o pré-teste, no banco real. As linhas gravadas tinham
+`source = 'binance'` e o `sync_binance_price_history.py` usa `SOURCE_DEFAULT =
+'binance_api'`. Como `source` entra na chave única e no filtro de
+`_last_timestamp_utc`, o sync concluía que não havia histórico, baixava tudo desde 2015 e
+gravava uma **segunda cópia completa** da série. Do outro lado, um treino configurado com
+o `source` que não existe morria com "Nenhum dado encontrado", mensagem que culpa os
+dados e não o filtro.
+
+- `ModelService.mensagem_sem_dados` lista as combinações de `source` e `exchange` que
+  existem para aquele símbolo e intervalo, com a contagem de linhas.
+- `outras_fontes` no módulo de sincronização avisa, antes de baixar, que a série já existe
+  sob outro `source` e que a execução vai duplicar em vez de completar.
+
+### Política do canal do alvo gravada no config do run
+
+`train` e `finetune` passaram a escrever `include_target_channel` no config salvo. Sem
+isso, um run feito hoje com o padrão `equalized` salvava um config sem a chave, e a
+inferência o leria como `legacy`, mudando o número de canais da entrada.
+
+---
+
+## Validação com dados reais
+
+Pré-teste de 27/09/2026 com o histórico completo da Binance carregado em MySQL local:
+BTCUSDT e ETHUSDT, candles de 1 hora, 79.767 por ativo, de 2017-08-17 a 2026-09-28,
+baixados pelo próprio `sync_binance_price_history.py`. Treino em GPU com os
+hiperparâmetros do apêndice da dissertação (L = 96, H = 1, LSTM [128, 64], tanh,
+dropout 0,2, lote 32, Adam 1e-3, semente 1482563973) e 10 épocas, número reduzido de
+propósito: o objetivo é conferir corretude, não reproduzir o valor final.
+
+### Estratégias de normalização
+
+| caso | canais | RMSE validação | RMSE teste | MAPE teste | excesso sobre persistência |
+|---|---|---|---|---|---|
+| global MinMax | 5 | 1216,14 | 3100,20 | 2,396% | +890,05% |
+| local MinMax | 5 | 127,12 | 342,77 | 0,385% | +9,46% |
+| multi-escala corrigido | 5 | 125,11 | 336,14 | 0,381% | +7,34% |
+| multi-escala legado | 5 | 240,50 | 654,08 | 0,837% | +108,88% |
+| multi-escala "like" | 5 | 125,11 | 336,14 | 0,381% | +7,34% |
+
+Leituras:
+
+- **A pipeline continua reproduzindo o comportamento publicado.** Com 10 épocas, o local
+  MinMax dá 342,77 contra 333,77 do trabalho (500 épocas), e o global MinMax dá 3100
+  contra 3431. A razão global sobre local fica em 9,0, contra 10,3 no texto.
+- **Determinismo confirmado.** Duas execuções independentes da mesma configuração
+  devolveram RMSE idêntico até a quarta casa decimal.
+- **As correções da família multi-escala valem 49% de erro.** De 654,08 no comportamento
+  legado para 336,14 com dispersão pela janela do alvo e seleção de períodos padronizada
+  por canal. Isso confirma, com medida, a hipótese registrada na dissertação: o
+  desempenho fraco daquela família era consequência do horizonte unitário, e não
+  propriedade do método multi-escala.
+- **EvoMSN e EvoMSN-like coincidem exatamente sob H = 1 com `window_stats`.** Não é erro:
+  com todas as escalas degeneradas, a referência vem da janela do alvo em todas elas e os
+  preditores auxiliares, única diferença entre as duas classes, nunca são chamados. Sob
+  `legacy` as duas voltam a divergir. Coberto por teste.
+
+### Matriz do confundimento
+
+Quatro braços, mesma semente, mesmas épocas, por `experiments/run_confound_matrix.py`:
+
+| braço | canais | alvo em X | RMSE teste | excesso sobre persistência |
+|---|---|---|---|---|
+| A, global legado | 4 | não | 4701,59 | +1401,45% |
+| B, global equalizado | 5 | sim | 3100,20 | +890,05% |
+| C, local equalizado | 5 | sim | 342,77 | +9,46% |
+| D, local sem o alvo | 4 | não | 401,31 | +28,16% |
+
+O canal extra de feature importa, e pouco: dar o fechamento ao braço global reduz o erro
+dele em 34%, e tirá-lo do braço local piora 17%. Com features iguais dos dois lados, a
+vantagem da normalização por janela permanece em 9,0 vezes (5 canais) e 11,7 vezes
+(4 canais), contra 10,3 vezes na comparação publicada, que ficava entre as duas. A
+conclusão central da dissertação sobrevive à comparação controlada.
+
+Ressalva: uma semente, 10 épocas, um único ativo. Serve para decidir que o efeito não
+inverte o resultado, não para substituir a tabela do trabalho.
+
+### Seleção de hiperparâmetros na validação
+
+Grid de duas combinações (taxa de aprendizado 1e-3 e 5e-4) com `score_on` no padrão novo:
+
+```
+{'LEARNING_RATE': 0.001}  -> rmse@validation = 136,68
+{'LEARNING_RATE': 0.0005} -> rmse@validation = 132,38   <- escolhida
+```
+
+O `leaderboard.csv` registra `score_on = validation` em todas as linhas. O conjunto de
+teste não participou da escolha.
+
+### Inferência ao vivo
+
+`live_run_once` executado com o config salvo pelo treino e, em seguida, com o mesmo config
+sem a chave `include_target_channel`, simulando um run anterior à correção. Nos dois casos
+a inferência montou a janela com o número de canais correto e rodou até a previsão.
+
 ---
 
 ## O que permanece em aberto
 
-1. **Matriz do confundimento** (`src/experiments/run_confound_matrix.py`): quantifica
-   quanto da vantagem da normalização por janela vinha do canal extra de feature. Precisa
-   de banco e de GPU.
-2. **Nova busca de hiperparâmetros** pontuando na validação, para publicar uma escolha
-   que não passou pelo teste.
-3. **Reexecução da família multi-escala** com `period_scaling="per_channel"`, para medir o
-   efeito da correção na seleção de períodos.
+1. **Matriz do confundimento com mais sementes e no ETH.** A execução acima usou uma
+   semente e um ativo. O efeito medido é pequeno frente à diferença entre famílias, mas o
+   número que entrar em publicação deveria vir de pelo menos três sementes nos dois
+   ativos.
+2. **Nova busca de hiperparâmetros** pontuando na validação, com orçamento de épocas
+   completo, para publicar uma escolha que não passou pelo teste.
+3. **Reexecução completa da família multi-escala** com as correções, em 500 épocas, para
+   substituir os números dessa família nas tabelas do trabalho.
+4. **Decidir o que fazer com a divergência entre o texto e o código** quanto à busca
+   preliminar de hiperparâmetros: a dissertação diz que foi feita apenas na validação, e a
+   ferramenta publicada só passou a permitir isso agora.

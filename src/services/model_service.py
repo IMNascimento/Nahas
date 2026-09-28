@@ -12,6 +12,7 @@ from contextlib import contextmanager
 
 from database.model_nahas import TrainingRun, FineTuningRun, db, GridResult
 from database.model_nocapital import PriceHistory
+from peewee import fn
 from services.trainer_factory import TrainerFactory
 from data.data_processing import DataProcessor
 from utils.technical_indicators import TechnicalIndicators
@@ -308,6 +309,30 @@ class ModelService:
         return y_mode in ("relative_last", "zscore_target", "minmax_target", "robust_target")
 
     @staticmethod
+    def mensagem_sem_dados(symbol, interval, currency, exchange, source,
+                           inicio, fim, disponiveis=None) -> str:
+        """Mensagem de 'sem dados' que aponta o filtro, e nao so o resultado.
+
+        A causa mais comum nao e ausencia de historico: e divergencia entre o
+        `source`/`exchange` do config e o que esta gravado na tabela. Sem listar o
+        que existe, a mensagem manda procurar no lugar errado.
+        """
+        linhas = [
+            f"Nenhum dado encontrado para: {symbol} {interval} {currency}",
+            f"Filtros usados: exchange={exchange!r}, source={source!r}",
+            f"Periodo: {inicio} a {fim}",
+        ]
+        if disponiveis:
+            combos = ", ".join(f"source={s!r}/exchange={e!r} ({n} linhas)"
+                               for s, e, n in disponiveis)
+            linhas.append(f"Disponivel na tabela para esse simbolo e intervalo: {combos}")
+            linhas.append("Ajuste 'source'/'exchange' no config, ou reimporte com esses valores.")
+        else:
+            linhas.append("Nao ha nenhuma linha para esse simbolo e intervalo, "
+                          "independentemente de source/exchange.")
+        return "\n".join(linhas)
+
+    @staticmethod
     def policy_from_config(config: dict) -> str:
         """Politica do canal do alvo declarada em um config JA SALVO.
 
@@ -518,6 +543,11 @@ class ModelService:
         config_path = os.path.join(base_path, "hiperparams", config_filename)
         metrics_path = os.path.join(base_path, "metrics.json")
 
+        # Politica do canal do alvo gravada de forma EXPLICITA no config do run.
+        # Sem isso, um config salvo hoje sai sem a chave e, na inferencia, seria lido
+        # como "legacy" (correto para runs antigos), mudando o numero de canais.
+        config["include_target_channel"] = config.get("include_target_channel", "equalized")
+
         with open(config_path, "w") as f:
             json.dump(config, f, indent=4)
 
@@ -538,11 +568,20 @@ class ModelService:
             )
             
             if df.empty:
-                raise ValueError(
-                    f"Nenhum dado encontrado para: {symbol} {interval} {currency}\n"
-                    f"Exchange: {exchange}, Source: {source}\n"
-                    f"Período: {config.get('start_date')} a {config.get('end_date')}"
-                )
+                disponiveis = []
+                try:
+                    consulta = (PriceHistory
+                                .select(PriceHistory.source, PriceHistory.exchange,
+                                        fn.COUNT(PriceHistory.id).alias("n"))
+                                .where((PriceHistory.symbol == symbol)
+                                       & (PriceHistory.interval == interval))
+                                .group_by(PriceHistory.source, PriceHistory.exchange))
+                    disponiveis = [(r["source"], r["exchange"], r["n"]) for r in consulta.dicts()]
+                except Exception:
+                    pass
+                raise ValueError(self.mensagem_sem_dados(
+                    symbol, interval, currency, exchange, source,
+                    config.get("start_date"), config.get("end_date"), disponiveis))
             
             if currency and 'currency' in df.columns:
                 df = df[df['currency'] == currency]
@@ -1056,6 +1095,7 @@ class ModelService:
             comparison_path = os.path.join(base_path, "comparison.json")
             
             config["run_id"] = hash_id
+            config["include_target_channel"] = self.policy_from_config(config)
             with open(config_path, "w") as f:
                 json.dump(config, f, indent=4)
             
