@@ -1,4 +1,7 @@
+import copy
 import os
+import time
+import uuid
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
@@ -215,7 +218,11 @@ class ModelService:
         rmse = float(np.sqrt(mse))
         mae = float(mean_absolute_error(yt, yp))
         r2  = float(r2_score(yt, yp))
-        return {"mse": mse, "rmse": rmse, "mae": mae, "r2": r2}
+        # MAPE em porcentagem. O piso no denominador evita divisao por zero quando
+        # a serie passa por zero; sem ele a metrica vira inf e contamina o relatorio.
+        denom = np.maximum(np.abs(yt), 1e-8)
+        mape = float(np.mean(np.abs((yt - yp) / denom)) * 100.0)
+        return {"mse": mse, "rmse": rmse, "mae": mae, "r2": r2, "mape": mape}
 
     # -------------------------
     # infra de pastas
@@ -248,9 +255,14 @@ class ModelService:
         y_test = y_test[:, :n_steps]
 
         assert y_pred.shape == y_test.shape, f"Shape mismatch: y_test={y_test.shape}, y_pred={y_pred.shape}"
-        assert len(timestamps) >= n_samples, "Timestamps length mismatch"
+        if len(timestamps) != n_samples:
+            # Cortar pelo fim alinhava series diferentes em silencio: o CSV e os
+            # graficos sairiam deslocados no tempo sem nenhum aviso.
+            raise ValueError(
+                f"timestamps={len(timestamps)} difere do numero de previsoes={n_samples}."
+            )
 
-        return y_pred, y_test, timestamps[-n_samples:], n_steps
+        return y_pred, y_test, timestamps, n_steps
 
     # -------------------------
     # util: extrair config de normalização
@@ -274,10 +286,18 @@ class ModelService:
             "evomsn_short_horizon_policy",
             config.get("evomsn_short_horizon_policy", "window_stats"),
         )  # "window_stats" | "legacy" | "error"
+        # Escala dos canais antes da FFT que escolhe os periodos dominantes.
+        # "legacy" mantem a media de amplitudes sobre o X cru, dominada pelo canal
+        # de maior escala; "per_channel" padroniza cada canal antes de somar.
+        ev_periodo = norm.get(
+            "evomsn_period_scaling",
+            config.get("evomsn_period_scaling", "per_channel"),
+        )  # "per_channel" | "legacy"
 
         return strategy, scaler_type, x_mode, y_mode, {
             "k_scales": ev_k, "agg": ev_agg, "predictor": ev_pred,
             "short_horizon_policy": ev_short,
+            "period_scaling": ev_periodo,
         }
 
     # -------------------------
@@ -286,6 +306,17 @@ class ModelService:
     @staticmethod
     def _y_mode_needs_target_in_X(y_mode: str) -> bool:
         return y_mode in ("relative_last", "zscore_target", "minmax_target", "robust_target")
+
+    @staticmethod
+    def policy_from_config(config: dict) -> str:
+        """Politica do canal do alvo declarada em um config JA SALVO.
+
+        Config gravado antes da chave existir descreve um modelo treinado no
+        comportamento antigo; assumir o padrao novo mudaria o numero de canais
+        da entrada e quebraria (ou desalinharia) a inferencia.
+        """
+        modo = (config or {}).get("include_target_channel")
+        return "legacy" if modo is None else modo
 
     @staticmethod
     def _resolve_include_target_channel(mode, *, norm_strategy: str, y_mode: str) -> bool:
@@ -591,6 +622,7 @@ class ModelService:
             # -------------------------
             ctx_train_local = None   # usado só se local
             ctx_train_msn   = None   # usado só se evomsn/like
+            ctx_val         = None   # contexto de validação, para as métricas de seleção
 
             if norm_strategy == "global":
                 X_train_scaled, y_train_scaled = processor.normalize_global(X_train, y_train)
@@ -610,7 +642,7 @@ class ModelService:
                     X_train, y_train, x_mode=x_mode, y_mode=y_mode,
                     target_idx=target_idx, target_windows=tw_train
                 )
-                X_val_scaled, y_val_scaled, _ = processor.apply_normalization_local(
+                X_val_scaled, y_val_scaled, ctx_val = processor.apply_normalization_local(
                     X_val, y_val, x_mode=x_mode, y_mode=y_mode,
                     target_idx=target_idx, target_windows=tw_val
                 )
@@ -632,6 +664,7 @@ class ModelService:
                         random_state=seed,
                         predictor_type=str(evcfg.get("predictor", "linear")),
                         short_horizon_policy=str(evcfg.get("short_horizon_policy", "window_stats")),
+                        period_scaling=str(evcfg.get("period_scaling", "per_channel")),
                     )
                 else:
                     msn = EvoMSNLikeNormalizer(
@@ -643,6 +676,7 @@ class ModelService:
                         agg=str(evcfg.get("agg", "fft")),
                         random_state=seed,
                         short_horizon_policy=str(evcfg.get("short_horizon_policy", "window_stats")),
+                        period_scaling=str(evcfg.get("period_scaling", "per_channel")),
                     )
 
                 # treino MSN (períodos globais a partir de X_train)
@@ -654,7 +688,7 @@ class ModelService:
                 # obtenha ctx também para o CONJUNTO DE TREINO (para inversão das métricas)
                 _Xtr_tmp, _ytr_tmp, ctx_train_msn = msn.transform(X_train, None, target_windows=tw_train)
                 # validação e teste com pesos via janela do alvo
-                X_val_scaled,  y_val_scaled,  _ctx_val  = msn.transform(X_val,  y_val,  target_windows=tw_val)
+                X_val_scaled,  y_val_scaled,  ctx_val   = msn.transform(X_val,  y_val,  target_windows=tw_val)
                 X_test_scaled, _y_dummy,     inverse_ctx_test = msn.transform(X_test, None,   target_windows=tw_test)
                 inverse_kind = "evomsn"
 
@@ -743,7 +777,36 @@ class ModelService:
         y_train_orig = y_train_orig[:, :n_steps_train]
 
         # -------------------------
-        # 4C) Métricas (Train/Test)
+        # 4C) Predição + inversão (VALIDAÇÃO)
+        # -------------------------
+        # A validação existe para ESCOLHER (hiperparâmetro, semente, arquitetura).
+        # Sem esta seção, a única métrica disponível para o grid era a do teste, o
+        # que transforma o conjunto de teste em conjunto de seleção.
+        metrics_val = None
+        try:
+            if hasattr(model, "predict"):
+                y_pred_scaled_val = model.predict(X_val_scaled)
+            else:
+                y_pred_scaled_val = trainer.predict(model, X_val_scaled)
+
+            if inverse_kind == "global":
+                y_pred_val = processor.inverse_transform_global(y_pred_scaled_val)
+                y_val_orig = processor.inverse_transform_global(y_val_scaled)
+            elif inverse_kind == "local":
+                y_pred_val = processor.inverse_transform_local(y_pred_scaled_val, ctx_val)
+                y_val_orig = processor.inverse_transform_local(y_val_scaled, ctx_val)
+            else:
+                _per_scale_val, y_pred_val = msn.denorm_and_ensemble(y_pred_scaled_val, ctx_val)
+                y_val_orig = y_val
+
+            y_pred_val = np.asarray(y_pred_val).reshape(len(y_pred_val), -1)
+            y_val_orig = np.asarray(y_val_orig).reshape(len(y_val_orig), -1)[:, :y_pred_val.shape[1]]
+            metrics_val = self._compute_basic_metrics(y_val_orig, y_pred_val)
+        except Exception as e:
+            print(f"[METRICS] WARN: falha ao calcular metricas de validacao: {e}", flush=True)
+
+        # -------------------------
+        # 4D) Métricas (Train/Validation/Test)
         # -------------------------
         metrics_train = self._compute_basic_metrics(y_train_orig, y_pred_train)
         metrics_test  = self._compute_basic_metrics(y_test_orig, y_pred_test)
@@ -793,6 +856,7 @@ class ModelService:
 
         metrics_bundle = {
             "train": metrics_train,
+            "validation": metrics_val,
             "test": metrics_test,
             "readable": metrics_readable,
             "baselines": baseline_report,
@@ -1048,7 +1112,7 @@ class ModelService:
 
             # mesma política de canal do alvo e de embargo usada no treino
             append_target = self._resolve_include_target_channel(
-                config.get("include_target_channel", "equalized"),
+                self.policy_from_config(config),
                 norm_strategy=norm_strategy,
                 y_mode=y_mode,
             )
@@ -1057,7 +1121,7 @@ class ModelService:
 
             embargo = config.get("embargo", None)
             if embargo is None:
-                legacy = str(config.get("include_target_channel", "equalized")).lower() == "legacy"
+                legacy = str(self.policy_from_config(config)).lower() == "legacy"
                 embargo = 0 if legacy else (window_size + steps_ahead - 1)
             embargo = int(embargo)
 
@@ -1117,13 +1181,18 @@ class ModelService:
                         window_size=window_size, horizon=steps_ahead, n_features=X_train.shape[2],
                         target_idx=0, k_scales=int(evcfg["k_scales"]), agg=str(evcfg.get("agg", "fft")),
                         random_state=config.get("seed", 42), predictor_type=str(evcfg.get("predictor", "linear")),
-                        short_horizon_policy=str(evcfg.get("short_horizon_policy", "window_stats"))
+                        short_horizon_policy=str(evcfg.get("short_horizon_policy", "window_stats")),
+                        period_scaling=str(evcfg.get("period_scaling", "per_channel")),
                     )
                 else:
                     msn = EvoMSNLikeNormalizer(
                         window_size=window_size, horizon=steps_ahead, n_features=X_train.shape[2],
                         target_idx=0, k_scales=int(evcfg["k_scales"]), agg=str(evcfg.get("agg", "fft")),
-                        random_state=config.get("seed", 42)
+                        random_state=config.get("seed", 42),
+                        # antes ficava no padrao e ignorava a politica configurada,
+                        # divergindo do caminho de treino para o mesmo experimento
+                        short_horizon_policy=str(evcfg.get("short_horizon_policy", "window_stats")),
+                        period_scaling=str(evcfg.get("period_scaling", "per_channel")),
                     )
                 X_train_scaled, y_train_scaled = msn.fit(
                     X_train, y_train, save_path=scaler_dir, target_windows=tw_train
@@ -1473,7 +1542,7 @@ class ModelService:
 
         # Mesma política do treino — precisa bater, senão o shape de entrada diverge do modelo.
         append_target = self._resolve_include_target_channel(
-            config.get("include_target_channel", "equalized"),
+            self.policy_from_config(config),
             norm_strategy=norm_strategy,
             y_mode=y_mode,
         )
@@ -1781,7 +1850,10 @@ class ModelService:
 
     # --- aplica params de um combo sobre a base, resolvendo seed e output_units ---
     def _apply_params_and_seed_unified(self, base_cfg: dict, params: dict) -> dict:
-        cfg = base_cfg.copy()
+        # Copia profunda: com copia rasa, os dicionarios aninhados (normalization,
+        # parallel, indicators_apply) eram compartilhados entre as combinacoes e a
+        # escrita de uma vazava para as seguintes.
+        cfg = copy.deepcopy(base_cfg)
         mapping = self._grid_key_mapping()
 
         for k, v in params.items():
@@ -1819,16 +1891,63 @@ class ModelService:
         if "steps_ahead" in cfg:
             cfg["output_units"] = int(cfg["steps_ahead"])
 
-        cfg["run_id"] = cfg.get("run_id") or str(random.randint(10**6, 10**7-1))
+        # Um run_id por combinacao: herdar o do config base fazia todas gravarem
+        # modelo, metricas e hiperparametros na MESMA pasta (e, em paralelo, ao
+        # mesmo tempo). O prefixo do usuario e preservado para agrupar.
+        prefixo = base_cfg.get("run_id")
+        sufixo = uuid.uuid4().hex[:8]
+        cfg["run_id"] = f"{prefixo}_{sufixo}" if prefixo else sufixo
         return cfg
 
 
-    def grid_search_unified(self, unified_config: dict, *, score: str = "rmse", score_on: str = "test"):
-        """Grid search com suporte a execução paralela segura."""
-        assert score_on in ("train", "test")
-        valid_scores = {"rmse", "mae", "mse", "r2"}
-        if score not in valid_scores:
-            raise ValueError(f"score deve ser um de {valid_scores}")
+    SCORES_VALIDOS = ("rmse", "mae", "mse", "r2", "mape")
+    CONJUNTOS_VALIDOS = ("train", "validation", "test")
+
+    @staticmethod
+    def validar_score(score: str, score_on: str) -> None:
+        """Valida a metrica e o conjunto usados para ESCOLHER hiperparametro."""
+        if score not in ModelService.SCORES_VALIDOS:
+            raise ValueError(f"score deve ser um de {ModelService.SCORES_VALIDOS}")
+        if score_on not in ModelService.CONJUNTOS_VALIDOS:
+            raise ValueError(f"score_on deve ser um de {ModelService.CONJUNTOS_VALIDOS}")
+
+    @staticmethod
+    def extrair_score(run_metrics: dict, score: str, score_on: str):
+        """Devolve o valor da metrica, ou None quando ela nao existe.
+
+        Antes a conversao direta para float recebia None e levantava TypeError
+        dentro do registro do resultado, derrubando o grid inteiro.
+        """
+        secao = (run_metrics or {}).get(score_on) or {}
+        bruto = secao.get(score)
+        if bruto is None:
+            return None
+        try:
+            return float(bruto)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def impasse_no_escalonador(*, pendentes: int, rodando: int, admitiu: bool,
+                               tentativas: int, limite: int = 30) -> bool:
+        """True quando o escalonador nao tem como progredir.
+
+        Com nada rodando e nada admitido, o laco antigo voltava ao inicio e
+        girava em vazio consumindo um nucleo inteiro, sem mensagem.
+        """
+        if rodando > 0 or admitiu or pendentes <= 0:
+            return False
+        return tentativas > limite
+
+    def grid_search_unified(self, unified_config: dict, *, score: str = "rmse",
+                            score_on: str = "validation"):
+        """Grid search com suporte a execução paralela segura.
+
+        `score_on` e "validation" por padrao: escolher hiperparametro pela metrica
+        do teste transforma o teste em conjunto de selecao e infla o resultado
+        final. O teste continua disponivel, mas como relato, nao como criterio.
+        """
+        self.validar_score(score, score_on)
 
         base_cfg, grid = self._split_unified_grid_config(unified_config)
         grid_id = base_cfg.get("grid_id") or datetime.now().strftime("grid_%Y%m%d_%H%M%S")
@@ -1850,8 +1969,11 @@ class ModelService:
             nonlocal best_record, results_summary
             run_metrics = out.get("metrics", {})
             readable = run_metrics.get("readable", {})
-            metrics_section = run_metrics.get(score_on, {})
-            val = float(metrics_section.get(score))
+            val = self.extrair_score(run_metrics, score, score_on)
+            if val is None:
+                print(f"[GRID] metrica {score} ausente em {score_on}; combinacao ignorada",
+                      flush=True)
+                return
             is_better = (val > (best_record or {}).get("score_value", -1e18)) if score == "r2" else (val < (best_record or {}).get("score_value", 1e18))
             
             try:
@@ -1915,8 +2037,10 @@ class ModelService:
             completed = 0
 
             with concurrent.futures.ProcessPoolExecutor(max_workers=pool_size) as ex:
+                tentativas_sem_progresso = 0
                 while pending or running:
                     # Admitir novos
+                    admitiu = False
                     i = 0
                     while i < len(pending):
                         params = pending[i]
@@ -1949,11 +2073,26 @@ class ModelService:
                         fut = ex.submit(_train_job_worker, args)
                         running[fut] = {"params": params, "gpu_idx": assigned_gpu, "framework": fw, "model_type": mt, "combo_idx": len(combos) - len(pending) + 1}
                         pending.pop(i)
+                        admitiu = True
                         print(f"[GRID] Submetido: combo {running[fut]['combo_idx']}/{len(combos)} | GPU: {assigned_gpu}", flush=True)
-                    
+
                     # Colher finalizados
                     if not running:
+                        # Nada rodando e nada admitido: sem o guarda abaixo o laco
+                        # girava em vazio consumindo um nucleo inteiro, em silencio.
+                        tentativas_sem_progresso = 0 if admitiu else tentativas_sem_progresso + 1
+                        if self.impasse_no_escalonador(pendentes=len(pending), rodando=0,
+                                                       admitiu=admitiu,
+                                                       tentativas=tentativas_sem_progresso):
+                            raise RuntimeError(
+                                f"Nenhuma das {len(pending)} combinacoes restantes cabe nos "
+                                f"recursos disponiveis. Revise cpu_workers, "
+                                f"max_workers_per_gpu e safety_ratio."
+                            )
+                        if not admitiu:
+                            time.sleep(2.0)
                         continue
+                    tentativas_sem_progresso = 0
                         
                     done, _ = concurrent.futures.wait(running.keys(), timeout=1.0, return_when=concurrent.futures.FIRST_COMPLETED)
                     

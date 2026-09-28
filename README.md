@@ -10,7 +10,7 @@
 
 **Nahas** é uma plataforma de previsão de séries temporais financeiras baseada em aprendizado profundo, com foco em criptomoedas. O sistema integra redes neurais LSTM e Transformer em três frameworks distintos (Keras, TensorFlow e PyTorch), oferecendo uma interface web interativa para treinamento, otimização de hiperparâmetros, fine-tuning de modelos e execução de previsões em tempo real via API da Binance.
 
-A plataforma também implementa a normalização **EvoMSN** (*Evolutionary Multi-Scale Normalization*), uma estratégia avançada de normalização multi-escala projetada para melhorar a qualidade das previsões em séries temporais financeiras voláteis.
+A plataforma também implementa uma normalização multi-escala **inspirada no EvoMSN** (*Evolving Multi-Scale Normalization*, Qin et al., 2024): seleção de periodicidades por transformada de Fourier, normalização por fatia, predição das estatísticas futuras e combinação ponderada das previsões. É uma variante **offline**: não implementa a otimização evolutiva *online* do método original, que alterna atualizações entre o modelo de sequência e o módulo estatístico. As menções a EvoMSN neste repositório devem ser lidas nesse sentido restrito.
 
 ---
 
@@ -67,8 +67,15 @@ source src/venv/bin/activate        # Linux/macOS
 ### 3. Instale as dependências
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt            # o que o código realmente importa
+pip install -r requirements-dev.txt        # + pytest, ruff e pip-audit
+pip install -r requirements-optional.txt   # + torch e MetaTrader5 (opcionais)
+pip install -r requirements-full.txt       # congelamento do ambiente dos experimentos
 ```
+
+O ambiente em que os experimentos da dissertação rodaram **não** tinha `torch` nem
+`MetaTrader5` instalados. Escolher o framework `pytorch` na interface sem instalar os
+extras levanta `ImportError` com a instrução correspondente.
 
 ### 4. Configure o ambiente
 
@@ -235,6 +242,64 @@ Previsão em tempo real (Binance API)
 ## Autores
 
 - **Igor Muniz Nascimento** — Desenvolvedor Principal — [GitHub](https://github.com/IMNascimento)
+
+---
+
+## Reprodução dos resultados da dissertação
+
+As correções de metodologia aplicadas depois dos experimentos mudaram os **padrões** do código.
+Para reproduzir exatamente os números publicados, use a configuração abaixo:
+
+```json
+{
+  "window_size": 96,
+  "steps_ahead": 1,
+  "train_size": 0.70,
+  "validation_split": 0.15,
+  "target_column": "close",
+  "relevant_columns": ["close", "open", "high", "low", "volume"],
+  "include_target_channel": "legacy",
+  "embargo": 0,
+  "seed": 1482563973,
+  "normalization": {
+    "strategy": "local",
+    "x_mode": "minmax",
+    "y_mode": "minmax_target",
+    "evomsn_short_horizon_policy": "legacy",
+    "evomsn_period_scaling": "legacy"
+  }
+}
+```
+
+As cinco sementes da seção de repetição são `1482563973`, `7`, `12345`, `98765` e `20260811`.
+
+Com os **padrões atuais** (`equalized`, embargo positivo, `window_stats`, `per_channel`) os
+números são diferentes, e é isso que se espera: os padrões são as versões corrigidas.
+
+---
+
+## Limitações conhecidas
+
+Declaradas aqui de propósito, para que sejam lidas antes de serem descobertas.
+
+- **Conjunto de features entre estratégias.** No modo `legacy`, a normalização por janela recebe a
+  série do alvo como canal extra de `X` e as demais estratégias não. Isso confunde o efeito da
+  normalização com o efeito daquele canal. A chave `include_target_channel` (`equalized`, `never`,
+  `legacy`) e o script `src/experiments/run_confound_matrix.py` existem para medir esse efeito; a
+  medição ainda não foi concluída.
+- **Degenerescência multi-escala sob horizonte unitário.** Com `H = 1`, a dispersão do alvo por
+  fatia é nula por construção e a saída da rede é anulada na desnormalização. A política
+  `short_horizon_policy` (`window_stats`, `legacy`, `error`) trata o caso; os resultados publicados
+  usam `legacy`, que reproduz o comportamento degenerado.
+- **Seleção de períodos por FFT.** Sob `period_scaling="legacy"`, a média de amplitudes entre canais
+  é dominada pelo canal de maior escala. O padrão `per_channel` padroniza cada canal antes da
+  transformada.
+- **Escolha de hiperparâmetros.** O grid pontua na **validação** por padrão. Pontuar no teste
+  continua possível, mas transforma o teste em conjunto de seleção e não deve ser usado para
+  relatar desempenho.
+- **Tempo limite por sinal do sistema.** O mecanismo de timeout usa `SIGALRM`, que existe apenas em
+  sistemas Unix e apenas na thread principal.
+- **Partição única.** O protocolo usa retenção temporal fixa, sem validação progressiva.
 
 ---
 

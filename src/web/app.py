@@ -486,8 +486,12 @@ with tabs[1]:
         horizontal=True
     )
 
-    score = st.selectbox("Métrica de ranking", ["rmse", "mae", "mse", "r2"], index=0)
-    score_on = st.selectbox("Avaliar métrica em", ["test", "train"], index=0)
+    score = st.selectbox("Métrica de ranking", ["rmse", "mae", "mse", "mape", "r2"], index=0)
+    score_on = st.selectbox(
+        "Avaliar métrica em", ["validation", "train", "test"], index=0,
+        help="A escolha de hiperparâmetro deve usar a validação. O teste é para relato "
+             "final: pontuar nele transforma o teste em conjunto de seleção."
+    )
 
     # ======================================================
     # MODO 1: Upload de JSON UNIFICADO

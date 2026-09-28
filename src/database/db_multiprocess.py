@@ -26,8 +26,10 @@ def ensure_process_db_connection(func):
         if not db.is_closed():
             try:
                 db.close()
-            except Exception:
-                pass
+            except Exception as e:
+                # Antes isso sumia em silencio: falha ao fechar conexao herdada
+                # aparece depois como conexao ociosa ou erro fora de contexto.
+                print(f"[PID-{pid}] AVISO ao fechar conexao herdada: {e}", flush=True)
         
         # Cria nova conexão para este processo
         try:
@@ -46,8 +48,8 @@ def ensure_process_db_connection(func):
                 if not db.is_closed():
                     db.close()
                     print(f"[PID-{pid}] Conexão MySQL fechada", flush=True)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[PID-{pid}] AVISO ao fechar conexao: {e}", flush=True)
     
     return wrapper
 

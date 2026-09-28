@@ -124,7 +124,11 @@ celerybeat.pid
 *.sage.py
 
 # Environments
+# Padrao amplo: .env.remote-backup, .env.local e afins carregam credenciais reais
+# e nao eram cobertos por ".env" sozinho. O arquivo de exemplo continua versionado.
 .env
+.env.*
+!.env.example
 .venv
 env/
 venv/

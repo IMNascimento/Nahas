@@ -29,6 +29,7 @@ class EvoMSNMeta:
     # adotado (H < p) e por isso usam as estatísticas da janela de entrada
     scale_window_stats: List[bool] = field(default_factory=list)
     short_horizon_policy: str = "legacy"
+    period_scaling: str = "legacy"
 
 
 class EvoMSNNormalizer:
@@ -81,6 +82,7 @@ class EvoMSNNormalizer:
         predictor_type: str = "linear",
         hidden: tuple[int, int] = (128, 64),
         short_horizon_policy: str = "window_stats",
+        period_scaling: str = "per_channel",
     ):
         self.L = int(window_size)
         self.H = int(horizon)
@@ -94,6 +96,10 @@ class EvoMSNNormalizer:
         self.hidden = tuple(hidden)
         self.predictor_type = predictor_type.lower()
         assert self.predictor_type in ("linear", "mlp"), "predictor_type deve ser 'linear' ou 'mlp'."
+        self.period_scaling = str(period_scaling).lower()
+        assert self.period_scaling in ("per_channel", "legacy"), (
+            "period_scaling deve ser 'per_channel' ou 'legacy'."
+        )
         self.short_horizon_policy = str(short_horizon_policy).lower()
         assert self.short_horizon_policy in ("window_stats", "legacy", "error"), (
             "short_horizon_policy deve ser 'window_stats', 'legacy' ou 'error'."
@@ -108,6 +114,12 @@ class EvoMSNNormalizer:
         count = 0
         for n in range(N):
             Xc = X_train[n] - X_train[n].mean(axis=0, keepdims=True)
+            if self.period_scaling == "per_channel":
+                # Sem padronizar por canal, a media de amplitudes e dominada pelo
+                # canal de maior escala (volume ~1e0..1e3 contra preco ~1e4), e os
+                # periodos escolhidos passam a refletir o espectro daquele canal,
+                # e nao o do alvo. 'legacy' mantem o comportamento anterior.
+                Xc = Xc / (X_train[n].std(axis=0, keepdims=True) + self.eps)
             F = np.fft.rfft(Xc, axis=0)          # (L/2+1, C)
             amps = np.abs(F)
             amps[0, :] = 0.0                     # remove DC
@@ -377,6 +389,7 @@ class EvoMSNNormalizer:
             xi_predictors=xi_regs,
             scale_window_stats=list(use_window),
             short_horizon_policy=self.short_horizon_policy,
+            period_scaling=self.period_scaling,
         )
 
         if save_path:
@@ -477,6 +490,8 @@ class EvoMSNNormalizer:
             meta.scale_window_stats = [False] * len(meta.periods)
         if not hasattr(meta, "short_horizon_policy"):
             meta.short_horizon_policy = "legacy"
+        if not hasattr(meta, "period_scaling"):
+            meta.period_scaling = "legacy"
         return meta
 
     @staticmethod
