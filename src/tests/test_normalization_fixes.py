@@ -247,6 +247,75 @@ def test_evomsn_like_nao_mistura_canais():
     print(f"OK  'like' usa o canal do alvo: phi={phi.mean():.1f} vs preco={close.mean():.1f}")
 
 
+# ------------------------------------------- achados da auditoria (itens 2 e 3)
+from utils.baselines import evaluate_against_baselines  # noqa: E402
+from utils.technical_indicators import TechnicalIndicators  # noqa: E402
+
+
+def test_indicadores_nao_preenchem_com_estatistica_global():
+    """
+    O preenchimento antigo usava mean()/min() da serie INTEIRA, o que injeta
+    informacao do futuro nas primeiras linhas (que caem no treino).
+    """
+    n = 200
+    df = pd.DataFrame({
+        "open": np.arange(n, dtype=float),
+        "high": np.arange(n, dtype=float) + 1,
+        "low": np.arange(n, dtype=float) - 1,
+        "close": np.arange(n, dtype=float),
+        "volume": np.ones(n),
+    })
+    out = TechnicalIndicators.process_indicators(df.copy(), {"sma": [{"period": 14}]})
+    ind = [c for c in out.columns if c not in ("open", "high", "low", "close", "volume")]
+    assert ind, "o indicador deveria ter sido criado"
+    col = out[ind[0]]
+
+    # os NaN de aquecimento devem PERMANECER (o chamador faz dropna)
+    assert col.iloc[:13].isna().all(), \
+        "NaN de aquecimento foi preenchido -> vazamento do futuro"
+    assert col.iloc[14:].notna().all(), "apos o aquecimento nao deveria haver NaN"
+
+    # Teste de causalidade: mexer APENAS no futuro nao pode alterar o passado.
+    # Com o preenchimento antigo (mean/min globais), alterar a cauda mudava o valor
+    # injetado nas primeiras linhas.
+    meio = n // 2
+    df2 = df.copy()
+    df2.loc[meio:, ["open", "high", "low", "close"]] *= 100.0   # futuro completamente outro
+    out2 = TechnicalIndicators.process_indicators(df2, {"sma": [{"period": 14}]})
+    col2 = out2[ind[0]]
+
+    a, b = col.iloc[:meio], col2.iloc[:meio]
+    assert a.isna().equals(b.isna()), "padrao de NaN no passado mudou por causa do futuro"
+    mask = a.notna()
+    assert np.allclose(a[mask], b[mask]), \
+        "valores do passado mudaram ao alterar o futuro -> preenchimento nao causal"
+    print("OK  indicadores: passado imune ao futuro, NaN de aquecimento preservados")
+
+
+def test_baseline_zero_declara_se_equivale_a_persistencia():
+    """O zero normalizado so e a persistencia em relative_last; o relatorio deve dizer."""
+    df = _fake_ohlcv()
+    p = DataProcessor(window_size=WS)
+    data = df.drop(columns=["timestamp"])
+    X, y = p.create_windows(data, coluna_alvo="close", steps_ahead=STEPS)
+    tw = ModelService._build_target_windows(data["close"].values, WS, STEPS)
+    pred = tw[:, -1, 0].reshape(-1, 1)  # emulador de persistencia
+
+    esperado = {"relative_last": True, "minmax_target": False, "zscore_target": False}
+    for y_mode, deve_equivaler in esperado.items():
+        _, _, ctx = p.normalize_local(X, y, y_mode=y_mode, target_windows=tw)
+        rep = evaluate_against_baselines(
+            y_true=y, y_pred=pred, target_windows=tw, steps_ahead=STEPS,
+            inverse_fn=lambda a, c=ctx: p.inverse_transform_local(a, c),
+        )
+        got = rep["constant_zero_vs_persistence"]["equals_persistence"]
+        assert got is deve_equivaler, (
+            f"{y_mode}: equals_persistence={got}, esperado {deve_equivaler}"
+        )
+        assert rep["constant_zero_normalized"]["equals_persistence"] is deve_equivaler
+        assert "meaning" in rep["constant_zero_normalized"]
+    print("OK  baseline zero declara corretamente quando equivale a persistencia")
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and callable(v)]

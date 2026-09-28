@@ -12,8 +12,11 @@ Este módulo fornece o piso contra o qual qualquer resultado precisa ser lido:
   • `persistence_forecast`     — repete a última observação.
   • `causal_moving_average`    — média móvel causal de k passos.
   • `constant_output_forecast` — o que o modelo preveria se emitisse uma
-    constante no espaço normalizado. Sob y_mode='relative_last', a constante
-    zero é EXATAMENTE a persistência: prever 0 já é o baseline.
+    constante no espaço normalizado. ATENÇÃO: o zero só equivale à persistência
+    sob y_mode='relative_last', que divide pelo último valor observado. Em
+    'minmax_target' o zero corresponde ao MÍNIMO da janela, e em '*_target' de
+    z-score, à média da janela — baselines diferentes, e piores. O relatório
+    informa explicitamente se a equivalência valeu.
   • `mimicry_diagnostics`      — separa mimetismo de habilidade, comparando
     retorno previsto contra retorno realizado.
   • `diebold_mariano`          — significância da diferença de erro, com
@@ -94,6 +97,10 @@ def constant_output_forecast(
 
     Sob y_mode='relative_last', `value=0.0` reproduz a persistência exatamente:
     é a prova de que a rede não precisa aprender nada para atingir aquele erro.
+
+    Sob os outros modos NÃO reproduz: em 'minmax_target' o zero é o mínimo da
+    janela; em 'zscore_target', a média. Verifique a equivalência antes de ler
+    este baseline como persistência — `evaluate_against_baselines` faz isso.
     """
     const = np.full((n_samples, steps_ahead), float(value), dtype=float)
     return np.asarray(inverse_fn(const), dtype=float)
@@ -250,9 +257,21 @@ def evaluate_against_baselines(
 
     if inverse_fn is not None:
         const = constant_output_forecast(inverse_fn, n, steps_ahead, value=0.0)[:, : yt.shape[1]]
+        max_diff = float(np.max(np.abs(const - persist)))
+        # tolerancia relativa a escala do alvo, para nao depender do ativo
+        tol = 1e-6 * max(float(np.mean(np.abs(yt))), 1.0)
+        equals = bool(max_diff <= tol)
         out["constant_zero_normalized"] = regression_metrics(yt, const)
-        out["constant_zero_equals_persistence"] = {
-            "max_abs_diff": float(np.max(np.abs(const - persist))),
+        out["constant_zero_normalized"]["equals_persistence"] = equals
+        out["constant_zero_normalized"]["meaning"] = (
+            "identico a persistencia (y_mode do tipo relative_last)" if equals
+            else "NAO e a persistencia: o zero normalizado corresponde a outra "
+                 "referencia da janela (minimo em minmax_target, media em zscore_target)"
+        )
+        out["constant_zero_vs_persistence"] = {
+            "max_abs_diff": max_diff,
+            "tolerance": tol,
+            "equals_persistence": equals,
         }
 
     rmse_m = out["model"]["rmse"]

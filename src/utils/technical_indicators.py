@@ -12,6 +12,10 @@ class TechnicalIndicators:
         Aplica os indicadores financeiros solicitados ao DataFrame.
 
         :param data: DataFrame contendo os dados históricos.
+        Os NaN iniciais dos indicadores (aquecimento da janela móvel) NÃO são
+        preenchidos: cabe ao chamador descartá-los com dropna() antes de janelar.
+        Preencher aqui exigiria informação do futuro.
+
         :param indicators_to_apply: Dicionário estruturado com indicadores e seus parâmetros.
                                     Exemplo: {
                                         "sma": [{"period": 14}],
@@ -69,13 +73,24 @@ class TechnicalIndicators:
                 except Exception as e:
                     print(f"Erro ao calcular o indicador '{indicator_name}' com parâmetros {params}: {e}")
 
-        # Preenche valores ausentes
+        # Preenchimento de valores ausentes — estritamente causal.
+        #
+        # A versão anterior usava data[col].mean() e data[col].min(), estatísticas da
+        # SÉRIE INTEIRA. Como o preenchimento ocorre antes da divisão temporal, as
+        # primeiras linhas de cada indicador (onde a janela móvel ainda não tem dados
+        # suficientes) recebiam um valor calculado a partir do futuro, inclusive do
+        # conjunto de teste. É vazamento temporal, a mesma classe de erro que este
+        # trabalho investiga.
+        #
+        # Regra atual:
+        #   • colunas de preço/volume: forward fill, que só olha para trás;
+        #   • colunas de indicador: os NaN iniciais permanecem e são descartados pelo
+        #     dropna() do chamador. Qualquer preenchimento aqui seria look-ahead —
+        #     backward fill copia o futuro, e média ou mínimo globais idem.
+        base_cols = ['open', 'high', 'low', 'close', 'volume']
         for col in data.columns:
-            if data[col].isna().any():
-                if col in ['open', 'high', 'low', 'close', 'volume']:
-                    data[col].fillna(data[col].mean(), inplace=True)
-                else:
-                    data[col].fillna(data[col].min(), inplace=True)
+            if col in base_cols and data[col].isna().any():
+                data[col] = data[col].ffill()
 
         return data
 

@@ -200,6 +200,61 @@ a inferência montou a janela com o número de canais correto e rodou até a pre
 
 ---
 
+## Segunda rodada: achados de 28/09
+
+### Credenciais no `.env.example` (crítico)
+
+`src/.env.example` é versionado desde 2023 e continha valores nos campos sensíveis, não
+placeholders. Comparação por hash contra `src/.env` e `src/.env.remote-backup` confirmou
+que **`SERVER_MT5` era idêntico ao valor real em uso**; os demais campos
+(`PASSWORD_DB`, `USER_DB`, `NAME_DB`, `EMAIL_USER`, `EMAIL_PASSWORD`) tinham valores que
+não batiam com o `.env` atual, mas também não eram placeholders — possivelmente
+credenciais antigas.
+
+Todos os 15 campos passaram a conter placeholders explícitos (`<senha_do_banco>` e
+similares), com cabeçalho avisando que o arquivo é versionado. `HOST_DB`, `PORT_DB`,
+`EMAIL_PORT` e os hosts de provedor ficaram com valores de exemplo neutros.
+
+**Isto corrige apenas o estado atual.** Os valores antigos continuam recuperáveis no
+histórico do Git, em vários commits desde 2023. Antes de tornar o repositório público é
+preciso, além desta correção:
+
+1. **rotacionar o que era real** — senha do banco, senha de e-mail e credenciais MT5;
+2. **decidir sobre o histórico** — reescrevê-lo (`git filter-repo`, que troca todos os
+   hashes e invalida clones existentes) ou publicar um repositório novo com commit único.
+
+### Vazamento temporal no preenchimento de indicadores
+
+`utils/technical_indicators.py` preenchia valores ausentes com `data[col].mean()` e
+`data[col].min()`, estatísticas da **série inteira**. Como o preenchimento ocorre antes da
+divisão temporal, as primeiras linhas de cada indicador — o aquecimento da janela móvel,
+que cai no conjunto de treino — recebiam um valor calculado a partir do futuro, teste
+incluído. É a mesma classe de erro que este trabalho investiga.
+
+Não afetou nenhum resultado publicado: `indicators_apply` está vazio em todas as
+execuções do trabalho, e as colunas de preço não tinham ausências. O defeito estava no
+código que seria publicado.
+
+Regra atual: preço e volume usam forward fill, que só olha para trás; colunas de
+indicador mantêm os NaN de aquecimento e são descartadas pelo `dropna()` do chamador.
+Qualquer preenchimento ali seria look-ahead — backward fill copia o futuro, e média ou
+mínimo globais idem. Coberto por teste de causalidade: alterar a metade final da série
+não altera nenhum valor da metade inicial.
+
+### Rótulo enganoso no baseline de saída constante
+
+`utils/baselines.py` reportava `constant_zero_equals_persistence`, sugerindo que prever
+zero no espaço normalizado equivale à persistência. A equivalência vale **apenas** para
+`y_mode='relative_last'`, que divide pelo último valor observado. Em `minmax_target` — o
+modo usado na matriz do confundimento — o zero corresponde ao **mínimo da janela**, e em
+`zscore_target`, à média: baselines diferentes e piores. Em pré-teste com dados reais a
+diferença chegou a 12.528 em preço, com RMSE de 3.115 reportado sob um nome que insinuava
+persistência.
+
+O relatório passa a trazer `equals_persistence` (booleano, com tolerância relativa à
+escala do alvo) e um campo `meaning` dizendo o que o zero significa naquele modo. Coberto
+por teste nos três modos.
+
 ## O que permanece em aberto
 
 1. **Matriz do confundimento com mais sementes e no ETH.** A execução acima usou uma
