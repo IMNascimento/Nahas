@@ -65,13 +65,25 @@ def impasse_no_escalonador(*, pendentes: int, rodando: int, admitiu: bool,
         return False
     return tentativas > limite
 
+def combos_falhos(grid_root: str) -> list:
+    """Parametros das combinacoes sem run_id no grid_summary.json (falharam)."""
+    with open(os.path.join(grid_root, "grid_summary.json"), "r") as f:
+        summary = json.load(f)
+    return [r["params"] for r in summary.get("summary", []) if not r.get("run_id")]
+
 def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
-                    score_on: str = "validation"):
+                    score_on: str = "validation", rerun_failed: bool = False):
     """Grid search com suporte a execução paralela segura.
 
     `score_on` e "validation" por padrao: escolher hiperparametro pela metrica
     do teste transforma o teste em conjunto de selecao e infla o resultado
     final. O teste continua disponivel, mas como relato, nao como criterio.
+
+    `rerun_failed=True` reexecuta, na mesma pasta do grid, apenas as combinacoes
+    que falharam (sem run_id no grid_summary.json anterior, ex.: timeout) e
+    funde os novos registros com os que ja deram certo. Leaderboard e
+    grid_summary.json sao reescritos completos; grid_provenance.json guarda
+    o historico das rodadas anteriores em "history".
     """
     # Import tardio: services.model_service importa este modulo no topo, entao
     # importar de la em tempo de modulo criaria ciclo. O worker fica junto de
@@ -86,6 +98,23 @@ def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
 
     grid_root = os.path.join(BASE_DIR, "results", "grid", grid_id)
     os.makedirs(grid_root, exist_ok=True)
+    # Reexecucao de falhas: parte do grid_summary.json anterior.
+    registros_anteriores, params_falhos, prov_history = [], None, []
+    if rerun_failed:
+        summary_path_prev = os.path.join(grid_root, "grid_summary.json")
+        if not os.path.exists(summary_path_prev):
+            raise FileNotFoundError(f"rerun_failed exige {summary_path_prev}")
+        with open(summary_path_prev, "r") as f:
+            prev = json.load(f)
+        registros_anteriores = [r for r in prev.get("summary", []) if r.get("run_id")]
+        params_falhos = [r["params"] for r in prev.get("summary", []) if not r.get("run_id")]
+        prov_prev_path = os.path.join(grid_root, "grid_provenance.json")
+        if os.path.exists(prov_prev_path):
+            with open(prov_prev_path, "r") as f:
+                prov_prev = json.load(f)
+            prov_history = prov_prev.pop("history", []) + [prov_prev]
+        print(f"[GRID] Reexecucao: {len(params_falhos)} combinacoes falhas, "
+              f"{len(registros_anteriores)} ja concluidas", flush=True)
     with open(os.path.join(grid_root, "unified_config.json"), "w") as f:
         json.dump(unified_config, f, indent=4)
     # Proveniencia do grid: codigo e ambiente no momento do disparo. Cada combo
@@ -94,6 +123,7 @@ def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
     grid_started = datetime.now()
     write_provenance(os.path.join(grid_root, "grid_provenance.json"),
                      grid_id=grid_id, started_at=grid_started.isoformat(timespec="seconds"),
+                     rerun_failed=rerun_failed, history=prov_history,
                      score=score, score_on=score_on, code=code_version(), environment=environment())
 
     par = (base_cfg.get("parallel") or {})
@@ -140,6 +170,18 @@ def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
     base_cfg.setdefault("gpu_index", None)
 
     combos = list(service._cartesian_product(grid or {}))
+    if params_falhos is not None:
+        combos = [c for c in combos if c in params_falhos]
+        # Os registros que ja deram certo entram como estao; o melhor e recalculado.
+        for rec in registros_anteriores:
+            results_summary.append(rec)
+            v = rec.get("score_value")
+            if v is None:
+                continue
+            melhor = (v > (best_record or {}).get("score_value", -1e18)) if score == "r2" \
+                else (v < (best_record or {}).get("score_value", 1e18))
+            if melhor:
+                best_record = rec
     print(f"\n[GRID] Total: {len(combos)} combinações", flush=True)
 
     if not enabled:
@@ -270,7 +312,9 @@ def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
                      grid_id=grid_id, started_at=grid_started.isoformat(timespec="seconds"),
                      finished_at=grid_finished.isoformat(timespec="seconds"),
                      duration_s=round((grid_finished - grid_started).total_seconds(), 1),
-                     n_combos=len(combos), n_ok=sum(1 for r in results_summary if r.get("run_id")),
+                     n_combos=len(combos) + len(registros_anteriores),
+                     n_ok=sum(1 for r in results_summary if r.get("run_id")),
+                     rerun_failed=rerun_failed, history=prov_history,
                      score=score, score_on=score_on, code=code_version(), environment=environment(),
                      runs=[{"run_id": r.get("run_id"), "framework": r["framework"], "model_type": r["model_type"],
                             "params": r["params"], "metrics_path": r.get("metrics_path")} for r in results_summary])

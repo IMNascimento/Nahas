@@ -134,15 +134,22 @@ def _train_job_worker(args: Tuple[Dict[str, Any], str, str, str, int | None]):
         print(f"[WORKER-{worker_id}] Iniciando treino...", flush=True)
         svc = ModelService()
         
+        # Limite por treino. Era 2 h fixas; Transformer + EvoMSN com 4 jobs em
+        # 2 GPUs passou disso (ETH, H=1 e H=6), entao o padrao e 6 h e pode ser
+        # ajustado por NAHAS_TRAIN_TIMEOUT_S (0 desliga o limite).
+        limite_s = int(os.environ.get("NAHAS_TRAIN_TIMEOUT_S", "21600"))
         try:
-            with timeout(7200):  # 2h max
+            if limite_s > 0:
+                with timeout(limite_s):
+                    out = svc.train(cfg, fw, mt, artifacts_base=artifacts_base)
+            else:
                 out = svc.train(cfg, fw, mt, artifacts_base=artifacts_base)
             print(f"[WORKER-{worker_id}] ✓ Treino concluído!", flush=True)
             return out
             
         except TimeoutError:
-            print(f"[WORKER-{worker_id}] ✗ TIMEOUT treino (>2h)", flush=True)
-            raise RuntimeError("Treino excedeu 2 horas")
+            print(f"[WORKER-{worker_id}] ✗ TIMEOUT treino (>{limite_s/3600:.1f}h)", flush=True)
+            raise RuntimeError(f"Treino excedeu {limite_s/3600:.1f} horas")
         
         finally:
             # Fecha conexão ao terminar
@@ -2064,6 +2071,7 @@ class ModelService:
     impasse_no_escalonador = staticmethod(_grid.impasse_no_escalonador)
 
     def grid_search_unified(self, unified_config: dict, *, score: str = "rmse",
-                            score_on: str = "validation"):
+                            score_on: str = "validation", rerun_failed: bool = False):
         """Delega para `optimization.grid_search.run_grid_search`."""
-        return _grid.run_grid_search(self, unified_config, score=score, score_on=score_on)
+        return _grid.run_grid_search(self, unified_config, score=score, score_on=score_on,
+                                     rerun_failed=rerun_failed)
