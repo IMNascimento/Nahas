@@ -23,6 +23,7 @@ from utils.db_utils import ensure_db_connection
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from data.evomsn_normalizer import EvoMSNNormalizer, EvoMSNLikeNormalizer
 from utils.baselines import evaluate_against_baselines
+from utils.degeneracy import degeneracy_summary
 import optimization.grid_search as _grid
 
 from typing import Any, Dict, Tuple
@@ -764,6 +765,7 @@ class ModelService:
         else:
             raise RuntimeError("Seu trainer/modelo precisa de método predict.")
 
+        degeneracy_diag = None  # so existe no caminho evomsn/evomsn_like
         if inverse_kind == "global":
             y_pred_test = processor.inverse_transform_global(y_pred_scaled_test)
             y_test_orig = processor.inverse_transform_global(y_test_scaled)
@@ -776,6 +778,16 @@ class ModelService:
             msn, ctx_test = inverse_ctx_test
             _per_scale_test, y_pred_test = msn.denorm_and_ensemble(y_pred_scaled_test, ctx_test)  # (N,H)
             y_test_orig = y_test  # já está no domínio real nesse caminho
+            # Diagnostico da degenerescencia de horizonte curto (artigo 2): quanto da
+            # previsao vem da rede e quanto vem do nivel previsto. Nunca derruba o treino.
+            try:
+                degeneracy_diag = degeneracy_summary(msn, y_pred_scaled_test, ctx_test, y_pred_test)
+                print(f"[EvoMSN][DEGENERESCENCIA] r_ensemble="
+                      f"{degeneracy_diag['contribution_ratio_ensemble']:.3e} | "
+                      f"r_por_escala={[f'{r:.3e}' for r in degeneracy_diag['contribution_ratio_per_scale']]}")
+            except Exception as e:
+                print(f"[EvoMSN][DEGENERESCENCIA][ERRO] {e}")
+                degeneracy_diag = {"error": str(e)}
 
         # alinhar shapes/timestamps (TESTE)
         y_pred_test, y_test_orig, timestamps, n_steps = self.universal_postprocess(y_pred_test, y_test_orig, ts_test)
@@ -898,6 +910,7 @@ class ModelService:
             "test": metrics_test,
             "readable": metrics_readable,
             "baselines": baseline_report,
+            "degeneracy": degeneracy_diag,
             "setup": {
                 "normalization_strategy": norm_strategy,
                 "x_mode": x_mode,
