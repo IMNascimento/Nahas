@@ -30,7 +30,7 @@ AVAILABLE_SOURCES = ["binance", "kaggle"]
 AVAILABLE_INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d", "1w"]
 # -- Parâmetros para opções
 frameworks = ["keras", "pytorch", "tensorflow"]
-model_types = ["lstm", "transformer"]
+model_types = ["lstm", "transformer", "linear"]
 financial_columns = ["close", "open", "high", "low", "volume"]
 indicator_options = [
     {"label": "SMA", "key": "sma", "param_label": "Período", "default": 14},

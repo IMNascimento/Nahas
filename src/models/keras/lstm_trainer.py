@@ -1,7 +1,7 @@
 from models.base.base_trainer import BaseTrainer
 from utils.validation import DataValidator
 from keras.models import Sequential, load_model
-from keras.layers import LSTM, Dense, Bidirectional
+from keras.layers import LSTM, Dense, Bidirectional, LayerNormalization
 from keras.regularizers import l1_l2
 from keras.optimizers import Adam, SGD
 from keras.callbacks import EarlyStopping
@@ -44,8 +44,12 @@ class KerasLSTMTrainer(BaseTrainer):
         kernel_initializer: str = "glorot_uniform",
         callbacks: list = None,
         learning_rate: float = 0.001, 
+        layer_norm: bool = False,
         **kwargs
     ):
+        # Ablacao (artigo 4): LayerNormalization apos cada camada recorrente, para
+        # testar se a normalizacao interna reduz a degradacao sob escalonador global.
+        self.layer_norm = bool(layer_norm)
         # Salva atributos e aceita expansão futura via kwargs
         self.input_shape = input_shape
         self.layers_config = layers_config
@@ -116,6 +120,8 @@ class KerasLSTMTrainer(BaseTrainer):
                     activation=activation,
                     kernel_initializer=self.kernel_initializer
                 ))
+            if self.layer_norm:
+                model.add(LayerNormalization(epsilon=1e-6))
         model.add(Dense(self.output_units))
         # Otimizador
         if self.optimizer.lower() == "adam":
@@ -220,7 +226,8 @@ class KerasLSTMTrainer(BaseTrainer):
             'activation_functions': self.activation_functions,
             'kernel_initializer': self.kernel_initializer,
             'callbacks': self.callbacks,
-            'learning_rate': self.learning_rate
+            'learning_rate': self.learning_rate,
+            'layer_norm': self.layer_norm,
         }
         return params
 

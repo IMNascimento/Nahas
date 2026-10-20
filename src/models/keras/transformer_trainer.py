@@ -1,7 +1,7 @@
 from models.base.base_trainer import BaseTrainer
 from utils.validation import DataValidator
 from keras.models import Model, load_model
-from keras.layers import Input, Dense, Dropout, LayerNormalization, MultiHeadAttention, Lambda
+from keras.layers import Input, Dense, Dropout, LayerNormalization, MultiHeadAttention, Lambda, Add
 from keras.optimizers import Adam, SGD
 from keras.callbacks import EarlyStopping
 import tensorflow as tf
@@ -17,7 +17,15 @@ def transformer_encoder_block(
     activation="relu",
     l1_reg=0.0,
     l2_reg=0.0,
+    use_layernorm=True,
 ):
+    # Ablacao (artigo 4): com use_layernorm=False o bloco mantem as conexoes
+    # residuais mas remove a normalizacao interna, que e a hipotese para a
+    # tolerancia do Transformer ao escalonador global.
+    def add_norm(a, b):
+        s = Add()([a, b])
+        return LayerNormalization(epsilon=1e-6)(s) if use_layernorm else s
+
     # Multi-head Attention
     attention_output = MultiHeadAttention(
         num_heads=num_heads,
@@ -26,15 +34,26 @@ def transformer_encoder_block(
     )(inputs, inputs)
     attention_output = Dropout(dropout_rate)(attention_output)
     # Add & Norm
-    out1 = LayerNormalization(epsilon=1e-6)(inputs + attention_output)
+    out1 = add_norm(inputs, attention_output)
 
     # Feed Forward Network
     ffn = Dense(ff_dim, activation=activation, kernel_regularizer=tf.keras.regularizers.l1_l2(l1=l1_reg, l2=l2_reg))(out1)
     ffn = Dropout(dropout_rate)(ffn)
     ffn = Dense(embed_dim, kernel_regularizer=tf.keras.regularizers.l1_l2(l1=l1_reg, l2=l2_reg))(ffn)
     # Add & Norm
-    out2 = LayerNormalization(epsilon=1e-6)(out1 + ffn)
+    out2 = add_norm(out1, ffn)
     return out2
+
+
+def sinusoidal_positional_encoding(length: int, depth: int) -> np.ndarray:
+    """Codificacao posicional senoidal de Vaswani et al. (2017), (length, depth)."""
+    pos = np.arange(length)[:, None].astype(float)
+    i = np.arange(depth)[None, :].astype(float)
+    angle = pos / np.power(10000.0, (2 * (i // 2)) / float(depth))
+    pe = np.zeros((length, depth))
+    pe[:, 0::2] = np.sin(angle[:, 0::2])
+    pe[:, 1::2] = np.cos(angle[:, 1::2])
+    return pe.astype("float32")
 
 class KerasTransformerTrainer(BaseTrainer):
     def __init__(
@@ -57,9 +76,15 @@ class KerasTransformerTrainer(BaseTrainer):
         activation: str = "relu",
         callbacks: list = None,
         learning_rate: float = 0.001,
+        use_layernorm: bool = True,
+        positional_encoding: str = "none",
         **kwargs
     ):
         self.input_shape = input_shape
+        # Ablacoes (artigo 4). A variante do estudo anterior equivale a
+        # use_layernorm=True e positional_encoding="none".
+        self.use_layernorm = bool(use_layernorm)
+        self.positional_encoding = str(positional_encoding).lower()
         self.num_layers = num_layers
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -100,10 +125,15 @@ class KerasTransformerTrainer(BaseTrainer):
         DataValidator.validate_integer(self.output_units, min_value=1)
         DataValidator.validate_string(self.activation)
         DataValidator.validate_float(self.learning_rate, min_value=0.0)
+        if self.positional_encoding not in ("none", "sinusoidal"):
+            raise ValueError("positional_encoding deve ser 'none' ou 'sinusoidal'.")
 
     def build_model(self):
         inputs = Input(shape=self.input_shape)
         x = Dense(self.embed_dim)(inputs)
+        if self.positional_encoding == "sinusoidal":
+            pe = tf.constant(sinusoidal_positional_encoding(int(self.input_shape[0]), int(self.embed_dim)))
+            x = Lambda(lambda t, pe=pe: t + pe[tf.newaxis, :, :], name="positional_encoding")(x)
         for _ in range(self.num_layers):
             x = transformer_encoder_block(
                 x,
@@ -114,6 +144,7 @@ class KerasTransformerTrainer(BaseTrainer):
                 activation=self.activation,
                 l1_reg=self.l1_reg,
                 l2_reg=self.l2_reg,
+                use_layernorm=self.use_layernorm,
             )
         x = Dense(16, activation="relu")(x)
         x = Dropout(self.dropout)(x)
@@ -213,7 +244,9 @@ class KerasTransformerTrainer(BaseTrainer):
             'output_units': self.output_units,
             'activation': self.activation,
             'callbacks': self.callbacks,
-            'learning_rate': self.learning_rate
+            'learning_rate': self.learning_rate,
+            'use_layernorm': self.use_layernorm,
+            'positional_encoding': self.positional_encoding,
         }
 
     def feature_importance(self):
