@@ -88,6 +88,13 @@ def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
     os.makedirs(grid_root, exist_ok=True)
     with open(os.path.join(grid_root, "unified_config.json"), "w") as f:
         json.dump(unified_config, f, indent=4)
+    # Proveniencia do grid: codigo e ambiente no momento do disparo. Cada combo
+    # grava o seu proprio provenance.json (com a semente) na pasta da execucao.
+    from utils.provenance import code_version, environment, write_provenance
+    grid_started = datetime.now()
+    write_provenance(os.path.join(grid_root, "grid_provenance.json"),
+                     grid_id=grid_id, started_at=grid_started.isoformat(timespec="seconds"),
+                     score=score, score_on=score_on, code=code_version(), environment=environment())
 
     par = (base_cfg.get("parallel") or {})
     enabled = bool(par.get("enabled", False))
@@ -258,6 +265,15 @@ def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
     summary_path = os.path.join(grid_root, "grid_summary.json")
     with open(summary_path, "w") as f:
         json.dump({"grid_id": grid_id, "score": score, "score_on": score_on, "best": best_record, "summary": results_summary}, f, indent=4)
+    grid_finished = datetime.now()
+    write_provenance(os.path.join(grid_root, "grid_provenance.json"),
+                     grid_id=grid_id, started_at=grid_started.isoformat(timespec="seconds"),
+                     finished_at=grid_finished.isoformat(timespec="seconds"),
+                     duration_s=round((grid_finished - grid_started).total_seconds(), 1),
+                     n_combos=len(combos), n_ok=sum(1 for r in results_summary if r.get("run_id")),
+                     score=score, score_on=score_on, code=code_version(), environment=environment(),
+                     runs=[{"run_id": r.get("run_id"), "framework": r["framework"], "model_type": r["model_type"],
+                            "params": r["params"], "metrics_path": r.get("metrics_path")} for r in results_summary])
 
     lb_csv = os.path.join(grid_root, "leaderboard.csv")
     with open(lb_csv, "w", newline="") as f:

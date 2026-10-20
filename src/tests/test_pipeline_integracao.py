@@ -175,3 +175,21 @@ if __name__ == "__main__":
         print(f"\n{len(fns)} testes de integração passaram.")
     finally:
         _limpa_artefatos()
+
+
+def test_execucao_grava_proveniencia_completa():
+    """Cada execução deixa provenance.json com semente, config, código, ambiente, dados e partição."""
+    import json
+    out = _treina("local", {"strategy": "local", "x_mode": "zscore", "y_mode": "relative_last"})
+    p = out["provenance_path"]
+    assert os.path.exists(p), "provenance.json não foi gravado"
+    d = json.load(open(p))
+    for k in ("run_id", "started_at", "finished_at", "seed", "config", "trainer_hyperparameters",
+              "code", "environment", "data", "split", "artifacts", "epochs_trained"):
+        assert k in d, f"falta {k} na proveniência"
+    assert d["seed"] == d["config"]["seed"]
+    assert d["config"]["framework"] == "keras" and d["config"]["model_type"] == "lstm"
+    assert d["data"]["n_rows"] == N_BARRAS and d["data"]["target_sha256"]
+    assert d["split"]["train"]["n"] + d["split"]["val"]["n"] + d["split"]["test"]["n"] > 0
+    assert d["environment"]["packages"]["tensorflow"]
+    assert d["code"]["source"] in ("git", "VERSION.json", "unknown")
