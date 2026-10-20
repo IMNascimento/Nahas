@@ -1,0 +1,142 @@
+{
+  "framework": [
+    "keras"
+  ],
+  "START_DATE": [
+    "2017-08-18 00:00:00"
+  ],
+  "END_DATE": [
+    "2024-11-11 23:59:59"
+  ],
+  "TRAIN_SIZE": [
+    0.7
+  ],
+  "VALIDATION_SPLIT": [
+    0.15
+  ],
+  "TARGET_COLUMN": [
+    "close"
+  ],
+  "RELEVANT_COLUMNS": [
+    [
+      "close",
+      "open",
+      "high",
+      "low",
+      "volume"
+    ]
+  ],
+  "INDICATORS_APPLY": [
+    {}
+  ],
+  "INCLUDE_TARGET_CHANNEL": [
+    "equalized"
+  ],
+  "INTERVAL": [
+    "1h"
+  ],
+  "CURRENCY": [
+    "USDT"
+  ],
+  "USE_GPU": [
+    true
+  ],
+  "PARALLEL": {
+    "enabled": true,
+    "backend": "process",
+    "max_workers_per_gpu": 1,
+    "safety_ratio": 0.2,
+    "cpu_workers": 0
+  },
+  "SEED": [
+    1482563973
+  ],
+  "WINDOW_SIZE": [
+    96
+  ],
+  "BATCH_SIZE": [
+    32
+  ],
+  "EPOCHS": [
+    3
+  ],
+  "PATIENCE": [
+    2
+  ],
+  "LEARNING_RATE": [
+    0.001
+  ],
+  "DROPOUT": [
+    0.2
+  ],
+  "OPTIMIZER": [
+    "Adam"
+  ],
+  "LOSS_FUNCTION": [
+    "mean_squared_error"
+  ],
+  "LAYERS_CONFIG": [
+    [
+      128,
+      64
+    ]
+  ],
+  "BIDIRECTIONAL": [
+    false
+  ],
+  "ACTIVATION_FUNCTION": [
+    [
+      "tanh",
+      "tanh"
+    ]
+  ],
+  "RECURRENT_DROPOUT": [
+    0.0
+  ],
+  "L1_REGULARIZATION": [
+    0.0
+  ],
+  "L2_REGULARIZATION": [
+    0.0
+  ],
+  "NUM_LAYERS": [
+    2
+  ],
+  "EMBED_DIM": [
+    32
+  ],
+  "NUM_HEADS": [
+    4
+  ],
+  "FF_DIM": [
+    32
+  ],
+  "ACTIVATION": [
+    "relu"
+  ],
+  "USE_LAYERNORM": [
+    true
+  ],
+  "POSITIONAL_ENCODING": [
+    "none"
+  ],
+  "grid_id": "smoke_servidor",
+  "_descricao": "Smoke no servidor: 2 execucoes curtas (LSTM e Transformer, BTC, ancorada) para medir s/epoca.",
+  "model_type": [
+    "lstm",
+    "transformer"
+  ],
+  "SYMBOL": [
+    "BTCUSDT"
+  ],
+  "STEPS_AHEAD": [
+    1
+  ],
+  "NORMALIZATION": [
+    {
+      "strategy": "local",
+      "x_mode": "zscore",
+      "y_mode": "anchored"
+    }
+  ]
+}
