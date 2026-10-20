@@ -40,7 +40,9 @@ class DataProcessor:
           desfazer `y` via `inverse_transform_local`.
 
         - Modos suportados para X: "zscore" | "minmax" | "robust"
-        - Modos suportados para y: "none" | "relative_last" | "zscore_target" | "minmax_target" | "robust_target"
+        - Modos suportados para y: "none" | "relative_last" | "anchored" | "zscore_target" | "minmax_target" | "robust_target"
+          * "anchored": ancora na ultima observacao (persistencia) e escala por
+            nivel x volatilidade realizada da janela x sqrt(h) para o passo h do horizonte.
           * Os modos de y que dependem do alvo aceitam `target_windows=(n, window, 1)`.
             Sem ele, caem no fallback `X[:, :, target_idx]`, que exige a feature-alvo dentro de X.
 
@@ -334,10 +336,11 @@ class DataProcessor:
         y: np.ndarray,
         *,
         x_mode: str = "zscore",                 # "zscore" | "minmax" | "robust"
-        y_mode: str = "relative_last",          # "none" | "zscore_target" | "minmax_target" | "robust_target" | "relative_last"
+        y_mode: str = "relative_last",          # "none" | "zscore_target" | "minmax_target" | "robust_target" | "relative_last" | "anchored"
         target_idx: int = 0,
         eps: float = 1e-8,
         target_windows: Optional[np.ndarray] = None,
+        vol_floor: float = 1e-6,
     ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
         """
         Normaliza por janela (amostra-a-amostra). Não usa os scalers globais.
@@ -355,6 +358,18 @@ class DataProcessor:
 
         Quando `target_windows` é exatamente o canal `target_idx` de X, os dois caminhos
         produzem resultados idênticos.
+
+        Modo "anchored" (normalização ancorada)
+        ---------------------------------------
+        Toda normalização de y tem a forma ỹ = (y − a(W)) / s(W), e a rede devolve
+        ŷ = a(W) + s(W)·f(x̃). A âncora a(W) é a previsão implícita (saída zero da
+        rede) e s(W) é o fator de amplificação do erro normalizado. O modo "anchored"
+        escolhe a(W) = última observação (persistência) e, para o passo h do horizonte,
+        s_h(W) = |a(W)| · σ_W · sqrt(h), em que σ_W é o desvio padrão dos log-retornos
+        dentro da janela do alvo (volatilidade realizada, causal). O resíduo normalizado
+        fica aproximadamente homocedástico entre regimes de volatilidade e a escala
+        cresce com o horizonte como num passeio aleatório. `vol_floor` evita escala
+        nula em janelas sem movimento.
         """
         DataValidator.validate_list(list(X.shape), item_type=int, min_length=3)
         DataValidator.validate_list(list(y.shape), item_type=int, min_length=2)
@@ -412,6 +427,18 @@ class DataProcessor:
             ref = ywin_src[:, [-1]]                                # (n,1)
             yn  = (y - ref) / (np.abs(ref) + eps)
             y_ctx = {"y_mode": "relative_last", "y_ref_last": ref, "eps": eps,
+                     "y_stats_from": y_stats_from}
+
+        elif y_mode == "anchored":
+            ref = ywin_src[:, [-1]]                                # (n,1) âncora = persistência
+            H = int(y.shape[1])
+            logret = np.diff(np.log(np.clip(ywin_src, eps, None)), axis=1)   # (n,window-1)
+            sigma = np.maximum(logret.std(axis=1, keepdims=True), vol_floor)  # (n,1)
+            steps = np.sqrt(np.arange(1, H + 1, dtype=float))[None, :]       # (1,H)
+            scale = np.abs(ref) * sigma * steps                    # (n,H)
+            yn = (y - ref) / (scale + eps)
+            y_ctx = {"y_mode": "anchored", "y_center": ref, "y_scale": scale,
+                     "y_sigma": sigma, "eps": eps, "vol_floor": vol_floor,
                      "y_stats_from": y_stats_from}
 
         elif y_mode in ("zscore_target", "minmax_target", "robust_target"):
@@ -473,9 +500,9 @@ class DataProcessor:
             ref = y_info["y_ref_last"]                               # (n,1)
             return y_scaled * (np.abs(ref) + eps) + ref
 
-        # modos com center/scale
+        # modos com center/scale ("anchored" tem scale (n,H): uma escala por passo)
         center = y_info["y_center"]                                   # (n,1)
-        scale  = y_info["y_scale"]                                    # (n,1)
+        scale  = y_info["y_scale"]                                    # (n,1) ou (n,H)
         return y_scaled * (scale + eps) + center
 
     # ======================

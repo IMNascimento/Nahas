@@ -13,7 +13,7 @@ Este módulo fornece o piso contra o qual qualquer resultado precisa ser lido:
   • `causal_moving_average`    — média móvel causal de k passos.
   • `constant_output_forecast` — o que o modelo preveria se emitisse uma
     constante no espaço normalizado. ATENÇÃO: o zero só equivale à persistência
-    sob y_mode='relative_last', que divide pelo último valor observado. Em
+    sob y_mode='relative_last' ou 'anchored', que ancoram no último valor observado. Em
     'minmax_target' o zero corresponde ao MÍNIMO da janela, e em '*_target' de
     z-score, à média da janela — baselines diferentes, e piores. O relatório
     informa explicitamente se a equivalência valeu.

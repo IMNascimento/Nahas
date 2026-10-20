@@ -154,10 +154,10 @@ def normalization_ui(defaults: dict | None = None, *, key_prefix: str):
         )
         y_mode = st.selectbox(
             "Normalização de y (Local)",
-            options=["none", "relative_last", "zscore_target", "minmax_target", "robust_target"],
-            index=_index_or_default(["none", "relative_last", "zscore_target", "minmax_target", "robust_target"], y_default, 0),
+            options=["none", "relative_last", "anchored", "zscore_target", "minmax_target", "robust_target"],
+            index=_index_or_default(["none", "relative_last", "anchored", "zscore_target", "minmax_target", "robust_target"], y_default, 0),
             key=f"{key_prefix}_y_mode",
-            help="Se usar *_target ou relative_last, o alvo da janela é usado como referência (o app adiciona a janela do alvo ao X automaticamente)."
+            help="Se usar *_target, relative_last ou anchored, o alvo da janela é usado como referência (o app adiciona a janela do alvo ao X automaticamente)."
         )
         st.caption("ℹ️ Em modos locais com dependência do alvo, o serviço adiciona a janela do alvo ao X como último canal.")
         return {"strategy": "local", "x_mode": x_mode, "y_mode": y_mode}
@@ -672,7 +672,7 @@ with tabs[1]:
                 with c1:
                     xmode = st.selectbox("Local: x_mode", ["zscore","minmax","robust"], index=0, key="norm_local_x")
                 with c2:
-                    ymode = st.selectbox("Local: y_mode", ["none","relative_last","zscore_target","minmax_target","robust_target"], index=0, key="norm_local_y")
+                    ymode = st.selectbox("Local: y_mode", ["none","relative_last","anchored","zscore_target","minmax_target","robust_target"], index=0, key="norm_local_y")
                 norm_list.append({"strategy": "local", "x_mode": xmode, "y_mode": ymode})
             if "evomsn" in norm_opts:
                 c1, c2 = st.columns(2)

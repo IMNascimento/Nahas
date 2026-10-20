@@ -304,7 +304,7 @@ class ModelService:
     # -------------------------
     @staticmethod
     def _y_mode_needs_target_in_X(y_mode: str) -> bool:
-        return y_mode in ("relative_last", "zscore_target", "minmax_target", "robust_target")
+        return y_mode in ("relative_last", "anchored", "zscore_target", "minmax_target", "robust_target")
 
     @staticmethod
     def mensagem_sem_dados(symbol, interval, currency, exchange, source,
@@ -1785,6 +1785,7 @@ class ModelService:
           "NORMALIZATION": [
             {"strategy": "global", "scaler_type": "robust"},
             {"strategy": "local", "x_mode": "zscore", "y_mode": "relative_last"},
+            {"strategy": "local", "x_mode": "zscore", "y_mode": "anchored"},
             {"strategy": "evomsn", "evomsn_k_scales": 4, "evomsn_predictor": "linear"}
           ],
 
