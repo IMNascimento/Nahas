@@ -1747,6 +1747,10 @@ class ModelService:
             "NUM_HEADS": "num_heads",
             "FF_DIM": "ff_dim",
             "ACTIVATION": "activation",
+            # Ablacoes (artigo 4)
+            "USE_LAYERNORM": "use_layernorm",            # Transformer: LayerNormalization nos blocos
+            "POSITIONAL_ENCODING": "positional_encoding",  # Transformer: "none" | "sinusoidal"
+            "LAYER_NORM": "layer_norm",                  # LSTM: LayerNormalization apos cada camada
         }
     
     @staticmethod

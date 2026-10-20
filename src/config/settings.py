@@ -18,7 +18,8 @@ CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODEL_TYPE_CLASSNAME = {
     "lstm": "LSTM",
-    "transformer": "Transformer"
+    "transformer": "Transformer",
+    "linear": "Linear",   # controle sem normalizacao interna (artigo 4)
 }
 FRAMEWORK_CLASSNAME = {
     "keras": "Keras",
