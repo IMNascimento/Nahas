@@ -771,6 +771,9 @@ class ModelService:
             val_loss = model.history.history["val_loss"][-1]
         elif hasattr(trainer, "get_last_metrics"):
             train_loss, val_loss = trainer.get_last_metrics()
+        # Epocas efetivamente treinadas, capturadas AQUI: chamadas posteriores a
+        # predict() podem reiniciar o historico do modelo e zerar a contagem.
+        epochs_trained = get_epochs_trained(getattr(model, "history", model))
 
         # -------------------------
         # 4A) Predição + inversão (TESTE)
@@ -992,7 +995,7 @@ class ModelService:
                 finished_at=finished_at.isoformat(timespec="seconds"),
                 duration_s=round((finished_at - started_at).total_seconds(), 1),
                 framework=framework, model_type=model_type, seed=int(seed),
-                epochs_trained=get_epochs_trained(getattr(model, "history", model)),
+                epochs_trained=epochs_trained,
                 train_loss=train_loss, val_loss=val_loss,
                 config=config, trainer_hyperparameters=trainer_hp,
                 code=code_version(), environment=environment(),
