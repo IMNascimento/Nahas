@@ -25,6 +25,7 @@ from data.evomsn_normalizer import EvoMSNNormalizer, EvoMSNLikeNormalizer
 from utils.baselines import evaluate_against_baselines
 from utils.degeneracy import degeneracy_summary
 from utils.conformal import scale_from_context
+from utils.provenance import code_version, environment, data_fingerprint, split_summary, write_provenance
 import optimization.grid_search as _grid
 
 from typing import Any, Dict, Tuple
@@ -499,6 +500,11 @@ class ModelService:
     def train(self, config: dict, framework: str, model_type: str, X=None, y=None, run_id=None, artifacts_base: str = "train",  symbol: str = None, interval: str = None, currency: str = None, source: str = None, exchange: str = None):
         seed = prepare_and_set_seed(config)
         config["seed"] = seed
+        # Proveniencia: o config salvo passa a declarar framework e modelo, e o
+        # instante de inicio entra no provenance.json gravado ao final.
+        started_at = datetime.now()
+        config["framework"] = framework
+        config["model_type"] = model_type
 
         if config.get("use_gpu", True):
             if framework.lower() in ("tensorflow", "keras"):
@@ -655,6 +661,16 @@ class ModelService:
             tw_train, tw_val, tw_test = tw_all[sl["train"]], tw_all[sl["val"]], tw_all[sl["test"]]
 
             print(f"[SPLIT] train={X_train.shape} val={X_val.shape} test={X_test.shape}")
+
+            # Proveniencia dos dados e da particao (o que exatamente entrou no treino)
+            prov_data = data_fingerprint(
+                data_df, target_col, symbol=symbol, interval=interval, currency=currency,
+                source=source, exchange=exchange,
+                start_date=config.get("start_date"), end_date=config.get("end_date"),
+                feature_columns=feat_cols, target_channel_in_X=bool(append_target),
+                n_channels=int(X_all.shape[2]), window_size=int(window_size), steps_ahead=int(steps_ahead),
+            )
+            prov_split = split_summary(sl, ts_all, embargo)
 
             # -------------------------
             # normalização por estratégia
@@ -959,6 +975,37 @@ class ModelService:
             json.dump(metrics_bundle, f, indent=4)
 
         # -------------------------
+        # 4E) Proveniencia: semente, config resolvido, hiperparametros efetivos do
+        # trainer, codigo, ambiente, dados e particao, num unico arquivo por execucao.
+        # -------------------------
+        provenance_path = os.path.join(base_path, "provenance.json")
+        try:
+            finished_at = datetime.now()
+            try:
+                trainer_hp = trainer.get_hyperparameters()
+            except Exception as e:
+                trainer_hp = {"error": str(e)}
+            write_provenance(
+                provenance_path,
+                run_id=hash_id,
+                started_at=started_at.isoformat(timespec="seconds"),
+                finished_at=finished_at.isoformat(timespec="seconds"),
+                duration_s=round((finished_at - started_at).total_seconds(), 1),
+                framework=framework, model_type=model_type, seed=int(seed),
+                epochs_trained=get_epochs_trained(getattr(model, "history", model)),
+                train_loss=train_loss, val_loss=val_loss,
+                config=config, trainer_hyperparameters=trainer_hp,
+                code=code_version(), environment=environment(),
+                data=prov_data, split=prov_split,
+                artifacts={"model_path": model_path, "csv_path": csv_path,
+                           "metrics_path": metrics_path, "config_path": config_path,
+                           "scaler_dir": scaler_dir},
+            )
+            print(f"[PROVENIENCIA] {provenance_path}")
+        except Exception as e:  # registro nunca derruba o treino
+            print(f"[PROVENIENCIA][ERRO] {e}")
+
+        # -------------------------
         # 5) CSV + Gráficos (TESTE)
         # -------------------------
         csv_exporter = CSVExporter()
@@ -1032,6 +1079,7 @@ class ModelService:
             "metrics_path": metrics_path,
             "run_id": hash_id,
             "results_path": base_path,
+            "provenance_path": provenance_path,
         }
 
     # -------------------------

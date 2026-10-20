@@ -171,3 +171,5 @@ cython_debug/
 /result
 /modelos
 /logs
+# gerado pelo nahas-run a cada sincronizacao (proveniencia do codigo no servidor)
+VERSION.json
