@@ -15,7 +15,14 @@ class CSVExporter:
         y_pred,
         output_path,
         steps_ahead=1,
+        extra_columns=None,
     ):
+        """
+        Salva (timestamp, step, real_value, predicted_value) em formato longo.
+        `extra_columns`: dict nome -> array (n_samples, n_steps) ou (n_samples,),
+        gravado na mesma ordem (ex.: 'scale', a escala usada na inversao de y,
+        que os intervalos conformais com escala local consomem).
+        """
         timestamps = np.array(timestamps)
         y_test = np.array(y_test)
         y_pred = np.array(y_pred)
@@ -37,6 +44,15 @@ class CSVExporter:
             "real_value": y_test.flatten(),
             "predicted_value": y_pred.flatten()
         })
+        for nome, col in (extra_columns or {}).items():
+            arr = np.asarray(col, dtype=float)
+            if arr.ndim == 1:
+                arr = arr.reshape(-1, 1)
+            if arr.shape[0] != n_samples:
+                raise ValueError(f"extra_columns[{nome!r}] tem {arr.shape[0]} linhas; esperado {n_samples}.")
+            if arr.shape[1] == 1 and n_steps > 1:
+                arr = np.repeat(arr, n_steps, axis=1)
+            results_df[nome] = arr[:, :n_steps].flatten()
         results_df.to_csv(output_path, index=False)
         print(f"Resultados salvos em: {output_path}")
         return results_df

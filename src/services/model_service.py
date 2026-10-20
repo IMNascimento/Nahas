@@ -24,6 +24,7 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from data.evomsn_normalizer import EvoMSNNormalizer, EvoMSNLikeNormalizer
 from utils.baselines import evaluate_against_baselines
 from utils.degeneracy import degeneracy_summary
+from utils.conformal import scale_from_context
 import optimization.grid_search as _grid
 
 from typing import Any, Dict, Tuple
@@ -789,6 +790,16 @@ class ModelService:
                 print(f"[EvoMSN][DEGENERESCENCIA][ERRO] {e}")
                 degeneracy_diag = {"error": str(e)}
 
+        # Escala por amostra usada na inversao de y (artigo 3: intervalos conformais
+        # com escala local). Diagnostico: nunca derruba o treino.
+        scale_test = None
+        try:
+            _ctx_s = inverse_ctx_test[1] if inverse_kind in ("evomsn", "evomsn_like") else inverse_ctx_test
+            scale_test = scale_from_context(inverse_kind, _ctx_s, len(y_pred_test),
+                                            int(np.asarray(y_pred_test).shape[-1]), processor)
+        except Exception as e:
+            print(f"[CONFORMAL][ERRO] escala do teste indisponivel: {e}")
+
         # alinhar shapes/timestamps (TESTE)
         y_pred_test, y_test_orig, timestamps, n_steps = self.universal_postprocess(y_pred_test, y_test_orig, ts_test)
 
@@ -851,6 +862,25 @@ class ModelService:
             y_pred_val = np.asarray(y_pred_val).reshape(len(y_pred_val), -1)
             y_val_orig = np.asarray(y_val_orig).reshape(len(y_val_orig), -1)[:, :y_pred_val.shape[1]]
             metrics_val = self._compute_basic_metrics(y_val_orig, y_pred_val)
+
+            # Predicoes de validacao em CSV, com a escala: e o conjunto de calibracao
+            # dos intervalos conformais (artigo 3). Sem isso, calibrar exigiria o teste.
+            try:
+                scale_val = scale_from_context(inverse_kind, ctx_val, len(y_pred_val),
+                                               y_pred_val.shape[1], processor)
+            except Exception as e:
+                print(f"[CONFORMAL][ERRO] escala da validacao indisponivel: {e}")
+                scale_val = None
+            try:
+                _ts_v = np.asarray(_ts_val)[-len(y_pred_val):]
+                val_csv_path = os.path.join(base_path, "csv", f"results_val_{hash_id}.csv")
+                CSVExporter().save_predictions_to_csv(
+                    timestamps=_ts_v, y_test=y_val_orig, y_pred=y_pred_val,
+                    steps_ahead=y_pred_val.shape[1], output_path=val_csv_path,
+                    extra_columns=None if scale_val is None else {"scale": scale_val},
+                )
+            except Exception as e:
+                print(f"[CONFORMAL][ERRO] csv de validacao nao gravado: {e}")
         except Exception as e:
             print(f"[METRICS] WARN: falha ao calcular metricas de validacao: {e}", flush=True)
 
@@ -934,7 +964,8 @@ class ModelService:
         csv_exporter = CSVExporter()
         results_df = csv_exporter.save_predictions_to_csv(
             timestamps=timestamps, y_test=y_test_orig, y_pred=y_pred_test,
-            steps_ahead=n_steps, output_path=csv_path
+            steps_ahead=n_steps, output_path=csv_path,
+            extra_columns=None if scale_test is None else {"scale": np.asarray(scale_test)[-len(y_pred_test):, :n_steps]},
         )
 
         plotter = Plotter()
