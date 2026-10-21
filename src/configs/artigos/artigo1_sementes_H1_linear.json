@@ -1,0 +1,167 @@
+{
+  "framework": [
+    "keras"
+  ],
+  "START_DATE": [
+    "2017-08-18 00:00:00"
+  ],
+  "END_DATE": [
+    "2024-11-11 23:59:59"
+  ],
+  "TRAIN_SIZE": [
+    0.7
+  ],
+  "VALIDATION_SPLIT": [
+    0.15
+  ],
+  "TARGET_COLUMN": [
+    "close"
+  ],
+  "RELEVANT_COLUMNS": [
+    [
+      "close",
+      "open",
+      "high",
+      "low",
+      "volume"
+    ]
+  ],
+  "INDICATORS_APPLY": [
+    {}
+  ],
+  "INCLUDE_TARGET_CHANNEL": [
+    "equalized"
+  ],
+  "INTERVAL": [
+    "1h"
+  ],
+  "CURRENCY": [
+    "USDT"
+  ],
+  "USE_GPU": [
+    true
+  ],
+  "PARALLEL": {
+    "enabled": true,
+    "backend": "process",
+    "max_workers_per_gpu": 2,
+    "safety_ratio": 0.2,
+    "cpu_workers": 0
+  },
+  "SEED": [
+    2026382952,
+    1710911661,
+    1295955485,
+    1052860402
+  ],
+  "WINDOW_SIZE": [
+    96
+  ],
+  "BATCH_SIZE": [
+    32
+  ],
+  "EPOCHS": [
+    500
+  ],
+  "PATIENCE": [
+    100
+  ],
+  "LEARNING_RATE": [
+    0.001
+  ],
+  "DROPOUT": [
+    0.2
+  ],
+  "OPTIMIZER": [
+    "Adam"
+  ],
+  "LOSS_FUNCTION": [
+    "mean_squared_error"
+  ],
+  "LAYERS_CONFIG": [
+    [
+      128,
+      64
+    ]
+  ],
+  "BIDIRECTIONAL": [
+    false
+  ],
+  "ACTIVATION_FUNCTION": [
+    [
+      "tanh",
+      "tanh"
+    ]
+  ],
+  "RECURRENT_DROPOUT": [
+    0.0
+  ],
+  "L1_REGULARIZATION": [
+    0.0
+  ],
+  "L2_REGULARIZATION": [
+    0.0
+  ],
+  "NUM_LAYERS": [
+    2
+  ],
+  "EMBED_DIM": [
+    32
+  ],
+  "NUM_HEADS": [
+    4
+  ],
+  "FF_DIM": [
+    32
+  ],
+  "ACTIVATION": [
+    "relu"
+  ],
+  "USE_LAYERNORM": [
+    true
+  ],
+  "POSITIONAL_ENCODING": [
+    "none"
+  ],
+  "grid_id": "artigo1_sementes_H1_linear",
+  "_descricao": "Artigo 1, grade de sementes (parte 3/3): backbone linear nas 5 normalizacoes, 4 ativos x 4 sementes extras, L=96, H=1. 80 execucoes rapidas. Mesmas sementes da parte 1: [2026382952, 1710911661, 1295955485, 1052860402]. Com as partes 1 e 2 e a grade principal, a tabela de H=1 fica com 5 sementes em todas as 5 normalizacoes x 3 backbones x 4 ativos.",
+  "model_type": [
+    "linear"
+  ],
+  "SYMBOL": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT"
+  ],
+  "STEPS_AHEAD": [
+    1
+  ],
+  "NORMALIZATION": [
+    {
+      "strategy": "global",
+      "scaler_type": "standard"
+    },
+    {
+      "strategy": "local",
+      "x_mode": "zscore",
+      "y_mode": "zscore_target"
+    },
+    {
+      "strategy": "local",
+      "x_mode": "minmax",
+      "y_mode": "minmax_target"
+    },
+    {
+      "strategy": "local",
+      "x_mode": "zscore",
+      "y_mode": "anchored"
+    },
+    {
+      "strategy": "evomsn",
+      "evomsn_k_scales": 3,
+      "evomsn_predictor": "linear",
+      "evomsn_short_horizon_policy": "window_stats"
+    }
+  ]
+}
