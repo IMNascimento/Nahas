@@ -19,6 +19,7 @@ predicted_value, scale): não há treino novo.
 """
 from __future__ import annotations
 
+import bisect
 import math
 from typing import Dict, Optional
 
@@ -154,21 +155,26 @@ def adaptive_conformal(y_cal, y_hat_cal, y_test, y_hat_test, alpha: float, gamma
     sc = None if scale_cal is None else np.asarray(scale_cal, dtype=float).reshape(-1)
     st = None if scale_test is None else np.asarray(scale_test, dtype=float).reshape(-1)
 
-    scores = list(nonconformity(yc, yhc, sc))
+    # Lista ordenada mantida por insercao binaria: o quantil vira um acesso por
+    # indice em vez de um sort completo a cada hora (O(n) por passo, nao O(n log n)).
+    scores = sorted(float(v) for v in nonconformity(yc, yhc, sc))
     alpha_t = alpha
     lo = np.empty_like(yt)
     hi = np.empty_like(yt)
     alphas = np.empty_like(yt)
     for t in range(len(yt)):
         a = min(max(alpha_t, 1e-6), 1 - 1e-6)
-        q = conformal_quantile(np.asarray(scores), a)
+        n = len(scores)
+        k = math.ceil((n + 1) * (1.0 - a))
+        q = float("inf") if k > n else scores[k - 1]
         s_t = 1.0 if st is None else st[t]
         lo[t], hi[t] = yht[t] - q * s_t, yht[t] + q * s_t
         err = 0.0 if lo[t] <= yt[t] <= hi[t] else 1.0
         alphas[t] = alpha_t
         alpha_t = alpha_t + gamma * (alpha - err)
-        scores.append(nonconformity(yt[t], yht[t], None if st is None else st[t]))
+        bisect.insort(scores, float(nonconformity(yt[t], yht[t], None if st is None else st[t])))
     return {"lo": lo, "hi": hi, "alpha_path": alphas, "gamma": gamma,
+            "n_alpha_out_of_range": int(np.sum((alphas <= 0.0) | (alphas >= 1.0))),
             "interval_score": interval_score(yt, lo, hi, alpha),
             **coverage_and_width(yt, lo, hi, level_test)}
 
