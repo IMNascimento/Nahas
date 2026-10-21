@@ -13,6 +13,12 @@ source ../venv/bin/activate
 mkdir -p logs
 # Limite por treino (worker). Transformer+EvoMSN com 4 jobs em 2 GPUs passa de 2 h.
 export NAHAS_TRAIN_TIMEOUT_S=${NAHAS_TRAIN_TIMEOUT_S:-21600}
+# Threads de CPU por worker. Sem isso cada um dos 4 workers abre pools com os 20
+# nucleos (TF, BLAS, OpenMP): carga 24 em 20 nucleos e pacote a 90 C. O treino em
+# si roda na GPU; a CPU so alimenta o laco do Keras e o pre-processamento.
+NT=${NAHAS_CPU_THREADS:-5}
+export OMP_NUM_THREADS=$NT OPENBLAS_NUM_THREADS=$NT MKL_NUM_THREADS=$NT
+export TF_NUM_INTRAOP_THREADS=$NT TF_NUM_INTEROP_THREADS=2
 FILA=(
   configs/artigos/artigo1_principal_H1.json
   configs/artigos/artigo1_principal_H6.json
