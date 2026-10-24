@@ -159,7 +159,7 @@ def tabA1(df, out):
               "\\cmidrule(lr){5-6}\\cmidrule(lr){7-8}\\cmidrule(lr){9-10}\n"
               " & & & & LSTM & Transf. & LSTM & Transf. & LSTM & Transf.")
     tabela(rows, header, "Ratio of the test RMSE to the persistence forecast for every number of scales $K$.",
-           "tab:allK", os.path.join(out, "tables", "tabA1_ratio_allK.tex"), "cllllrrrrr", wide=True)
+           "tab:allK", os.path.join(out, "tables", "tabA1_ratio_allK.tex"), "cllllrrrrr", wide=True, pos="!htb")
 
 
 # ---------------------------------------------------------------- figuras
