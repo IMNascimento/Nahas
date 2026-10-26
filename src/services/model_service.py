@@ -380,6 +380,24 @@ class ModelService:
             "Use 'equalized', 'never' ou 'legacy'."
         )
 
+    @staticmethod
+    def _evomsn_inverse_constant(a, inverse_ctx):
+        """
+        Inversao de uma saida da rede no espaco normalizado do EvoMSN (teste de
+        saida constante, artigo 6). A rede do EvoMSN ve N*k janelas (k escalas,
+        empilhadas escala a escala); `a` tem shape (n, H) com n <= N e refere-se
+        as ultimas n amostras. Replica `a` em cada escala, desnormaliza e agrega
+        com os mesmos pesos usados para as predicoes do modelo.
+        """
+        msn, ctx = inverse_ctx
+        a = np.asarray(a, dtype=float)
+        k = int(ctx["k"])
+        N = int(np.asarray(ctx["phi_hat_stack"]).shape[0]) // k
+        full = np.zeros((N, a.shape[1]), dtype=float)
+        full[-a.shape[0]:] = a
+        _per_scale, y = msn.denorm_and_ensemble(np.tile(full, (k, 1)), ctx)
+        return np.asarray(y)[-a.shape[0]:]
+
     # constrói janelas do alvo para concatenar como último canal do X
     @staticmethod
     def _build_target_windows(target_series: np.ndarray, window_size: int, steps_ahead: int) -> np.ndarray:
@@ -938,6 +956,9 @@ class ModelService:
                     return processor.inverse_transform_local(a, inverse_ctx_test)
             elif inverse_kind == "global":
                 inv_fn = processor.inverse_transform_global
+            else:  # evomsn / evomsn_like: a saida constante passa pelo ensemble das escalas
+                def inv_fn(a):
+                    return self._evomsn_inverse_constant(a, inverse_ctx_test)
 
             baseline_report = evaluate_against_baselines(
                 y_true=y_test_orig,
@@ -1853,6 +1874,11 @@ class ModelService:
             "USE_LAYERNORM": "use_layernorm",            # Transformer: LayerNormalization nos blocos
             "POSITIONAL_ENCODING": "positional_encoding",  # Transformer: "none" | "sinusoidal"
             "LAYER_NORM": "layer_norm",                  # LSTM: LayerNormalization apos cada camada
+            # CNN-LSTM (artigo 6)
+            "CONV_FILTERS": "conv_filters",
+            "CONV_KERNEL": "conv_kernel",
+            "CONV_LAYERS": "conv_layers",
+            "POOL_SIZE": "pool_size",
         }
     
     @staticmethod
