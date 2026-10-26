@@ -1,0 +1,158 @@
+{
+  "framework": [
+    "keras"
+  ],
+  "START_DATE": [
+    "2020-08-11 06:00:00"
+  ],
+  "END_DATE": [
+    "2023-11-17 23:59:59"
+  ],
+  "TRAIN_SIZE": [
+    0.785916
+  ],
+  "VALIDATION_SPLIT": [
+    0.138691
+  ],
+  "TARGET_COLUMN": [
+    "close"
+  ],
+  "RELEVANT_COLUMNS": [
+    [
+      "close",
+      "open",
+      "high",
+      "low",
+      "volume"
+    ]
+  ],
+  "INDICATORS_APPLY": [
+    {}
+  ],
+  "INCLUDE_TARGET_CHANNEL": [
+    "equalized"
+  ],
+  "INTERVAL": [
+    "1h"
+  ],
+  "CURRENCY": [
+    "USDT"
+  ],
+  "USE_GPU": [
+    true
+  ],
+  "PARALLEL": {
+    "enabled": true,
+    "backend": "process",
+    "max_workers_per_gpu": 2,
+    "safety_ratio": 0.2,
+    "cpu_workers": 0
+  },
+  "SEED": [
+    1482563973
+  ],
+  "WINDOW_SIZE": [
+    96
+  ],
+  "BATCH_SIZE": [
+    32
+  ],
+  "EPOCHS": [
+    500
+  ],
+  "PATIENCE": [
+    100
+  ],
+  "LEARNING_RATE": [
+    0.001
+  ],
+  "DROPOUT": [
+    0.2
+  ],
+  "OPTIMIZER": [
+    "Adam"
+  ],
+  "LOSS_FUNCTION": [
+    "mean_squared_error"
+  ],
+  "LAYERS_CONFIG": [
+    [
+      128,
+      64
+    ]
+  ],
+  "BIDIRECTIONAL": [
+    false
+  ],
+  "ACTIVATION_FUNCTION": [
+    [
+      "tanh",
+      "tanh"
+    ]
+  ],
+  "RECURRENT_DROPOUT": [
+    0.0
+  ],
+  "L1_REGULARIZATION": [
+    0.0
+  ],
+  "L2_REGULARIZATION": [
+    0.0
+  ],
+  "NUM_LAYERS": [
+    2
+  ],
+  "EMBED_DIM": [
+    32
+  ],
+  "NUM_HEADS": [
+    4
+  ],
+  "FF_DIM": [
+    32
+  ],
+  "ACTIVATION": [
+    "relu"
+  ],
+  "USE_LAYERNORM": [
+    true
+  ],
+  "POSITIONAL_ENCODING": [
+    "none"
+  ],
+  "grid_id": "artigo1_rolling_SOLUSDT_o0",
+  "_descricao": "Artigo 1, origem rolante 1/5 em SOLUSDT: serie ate 2023-11-17 23:59:59, teste = ultimas 2160 h (inicio esperado 2023-08-20 00:59:59), validacao 15% do restante, treino expansivel. Fracoes calculadas sobre 28650 barras esperadas desde 2020-08-11 06:00:00. LSTM e Transformer x {global Z, janela Z, ancorada}; persistencia vem nos baselines.",
+  "model_type": [
+    "lstm",
+    "transformer"
+  ],
+  "SYMBOL": [
+    "SOLUSDT"
+  ],
+  "STEPS_AHEAD": [
+    1
+  ],
+  "NORMALIZATION": [
+    {
+      "strategy": "global",
+      "scaler_type": "standard"
+    },
+    {
+      "strategy": "local",
+      "x_mode": "zscore",
+      "y_mode": "zscore_target"
+    },
+    {
+      "strategy": "local",
+      "x_mode": "zscore",
+      "y_mode": "anchored"
+    }
+  ],
+  "_rolling_origin": {
+    "k": 0,
+    "n_origins": 5,
+    "test_hours": 2160,
+    "test_start_expected": "2023-08-20 00:59:59",
+    "n_bars_expected": 28650
+  }
+}

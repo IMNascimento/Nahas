@@ -1,0 +1,149 @@
+{
+  "framework": [
+    "keras"
+  ],
+  "START_DATE": [
+    "2017-08-18 00:00:00"
+  ],
+  "END_DATE": [
+    "2024-11-11 23:59:59"
+  ],
+  "TRAIN_SIZE": [
+    0.7
+  ],
+  "VALIDATION_SPLIT": [
+    0.15
+  ],
+  "TARGET_COLUMN": [
+    "close"
+  ],
+  "RELEVANT_COLUMNS": [
+    [
+      "close",
+      "open",
+      "high",
+      "low",
+      "volume"
+    ]
+  ],
+  "INDICATORS_APPLY": [
+    {}
+  ],
+  "INCLUDE_TARGET_CHANNEL": [
+    "equalized"
+  ],
+  "INTERVAL": [
+    "1h"
+  ],
+  "CURRENCY": [
+    "USDT"
+  ],
+  "USE_GPU": [
+    true
+  ],
+  "PARALLEL": {
+    "enabled": true,
+    "backend": "process",
+    "max_workers_per_gpu": 2,
+    "safety_ratio": 0.2,
+    "cpu_workers": 0
+  },
+  "SEED": [
+    2026382952,
+    1710911661,
+    1295955485,
+    1052860402
+  ],
+  "WINDOW_SIZE": [
+    96
+  ],
+  "BATCH_SIZE": [
+    32
+  ],
+  "EPOCHS": [
+    500
+  ],
+  "PATIENCE": [
+    100
+  ],
+  "LEARNING_RATE": [
+    0.001
+  ],
+  "DROPOUT": [
+    0.2
+  ],
+  "OPTIMIZER": [
+    "Adam"
+  ],
+  "LOSS_FUNCTION": [
+    "mean_squared_error"
+  ],
+  "LAYERS_CONFIG": [
+    [
+      128,
+      64
+    ]
+  ],
+  "BIDIRECTIONAL": [
+    false
+  ],
+  "ACTIVATION_FUNCTION": [
+    [
+      "tanh",
+      "tanh"
+    ]
+  ],
+  "RECURRENT_DROPOUT": [
+    0.0
+  ],
+  "L1_REGULARIZATION": [
+    0.0
+  ],
+  "L2_REGULARIZATION": [
+    0.0
+  ],
+  "NUM_LAYERS": [
+    2
+  ],
+  "EMBED_DIM": [
+    32
+  ],
+  "NUM_HEADS": [
+    4
+  ],
+  "FF_DIM": [
+    32
+  ],
+  "ACTIVATION": [
+    "relu"
+  ],
+  "USE_LAYERNORM": [
+    true
+  ],
+  "POSITIONAL_ENCODING": [
+    "none"
+  ],
+  "grid_id": "artigo4_sementes_H24_evomsn",
+  "_descricao": "Artigo 4, replica em H=24 das 4 sementes extras (a semente principal ja esta em artigo1_principal_H24), L=96, LSTM/Transformer x EvoMSN (32).",
+  "model_type": [
+    "lstm",
+    "transformer"
+  ],
+  "SYMBOL": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT"
+  ],
+  "STEPS_AHEAD": [
+    24
+  ],
+  "NORMALIZATION": [
+    {
+      "strategy": "evomsn",
+      "evomsn_k_scales": 3,
+      "evomsn_predictor": "linear",
+      "evomsn_short_horizon_policy": "window_stats"
+    }
+  ]
+}

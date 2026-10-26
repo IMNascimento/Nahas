@@ -1,0 +1,42 @@
+# Fila do servidor (lida por run_artigos.sh a cada item). Grades concluidas ate 25/10: artigo1_principal_H1/H6/H24, artigo2_degenerescencia, artigo1_sementes_H1(+_linear,_evomsn).
+# --- artigo 1: origem rolante (120 execucoes)
+configs/artigos/artigo1_rolling_BTCUSDT_o0.json
+configs/artigos/artigo1_rolling_BTCUSDT_o1.json
+configs/artigos/artigo1_rolling_BTCUSDT_o2.json
+configs/artigos/artigo1_rolling_BTCUSDT_o3.json
+configs/artigos/artigo1_rolling_BTCUSDT_o4.json
+configs/artigos/artigo1_rolling_ETHUSDT_o0.json
+configs/artigos/artigo1_rolling_ETHUSDT_o1.json
+configs/artigos/artigo1_rolling_ETHUSDT_o2.json
+configs/artigos/artigo1_rolling_ETHUSDT_o3.json
+configs/artigos/artigo1_rolling_ETHUSDT_o4.json
+configs/artigos/artigo1_rolling_SOLUSDT_o0.json
+configs/artigos/artigo1_rolling_SOLUSDT_o1.json
+configs/artigos/artigo1_rolling_SOLUSDT_o2.json
+configs/artigos/artigo1_rolling_SOLUSDT_o3.json
+configs/artigos/artigo1_rolling_SOLUSDT_o4.json
+configs/artigos/artigo1_rolling_BNBUSDT_o0.json
+configs/artigos/artigo1_rolling_BNBUSDT_o1.json
+configs/artigos/artigo1_rolling_BNBUSDT_o2.json
+configs/artigos/artigo1_rolling_BNBUSDT_o3.json
+configs/artigos/artigo1_rolling_BNBUSDT_o4.json
+# --- artigo 4: ablacoes (90)
+configs/artigos/artigo4_ablacao_A1.json
+configs/artigos/artigo4_ablacao_A2.json
+configs/artigos/artigo4_ablacao_A3.json
+# --- artigos 1 e 4: varredura de L, LSTM/Transformer (480)
+configs/artigos/artigo4_L24_H1.json
+configs/artigos/artigo4_L48_H1.json
+configs/artigos/artigo4_L168_H1.json
+# --- (artigos 5 e 6 entram aqui quando o codigo estiver pronto)
+# --- artigo 4: varredura de L, linear e EvoMSN (420)
+configs/artigos/artigo4_L24_H1_linear.json
+configs/artigos/artigo4_L48_H1_linear.json
+configs/artigos/artigo4_L168_H1_linear.json
+configs/artigos/artigo4_L24_H1_evomsn.json
+configs/artigos/artigo4_L48_H1_evomsn.json
+configs/artigos/artigo4_L168_H1_evomsn.json
+# --- artigo 4: replica H=24 com 4 sementes extras (240)
+configs/artigos/artigo4_sementes_H24.json
+configs/artigos/artigo4_sementes_H24_linear.json
+configs/artigos/artigo4_sementes_H24_evomsn.json
