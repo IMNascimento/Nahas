@@ -20,6 +20,7 @@ MODEL_TYPE_CLASSNAME = {
     "lstm": "LSTM",
     "transformer": "Transformer",
     "linear": "Linear",   # controle sem normalizacao interna (artigo 4)
+    "cnn_lstm": "CNNLSTM",  # pipeline reimplementado da literatura (artigo 6)
 }
 FRAMEWORK_CLASSNAME = {
     "keras": "Keras",

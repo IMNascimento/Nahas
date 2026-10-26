@@ -1,0 +1,160 @@
+{
+  "framework": [
+    "keras"
+  ],
+  "START_DATE": [
+    "2017-08-18 00:00:00"
+  ],
+  "END_DATE": [
+    "2024-11-11 23:59:59"
+  ],
+  "TRAIN_SIZE": [
+    0.7
+  ],
+  "VALIDATION_SPLIT": [
+    0.15
+  ],
+  "TARGET_COLUMN": [
+    "close"
+  ],
+  "RELEVANT_COLUMNS": [
+    [
+      "close"
+    ]
+  ],
+  "INDICATORS_APPLY": [
+    {}
+  ],
+  "INCLUDE_TARGET_CHANNEL": [
+    "equalized"
+  ],
+  "INTERVAL": [
+    "1h"
+  ],
+  "CURRENCY": [
+    "USDT"
+  ],
+  "USE_GPU": [
+    true
+  ],
+  "PARALLEL": {
+    "enabled": true,
+    "backend": "process",
+    "max_workers_per_gpu": 2,
+    "safety_ratio": 0.2,
+    "cpu_workers": 0
+  },
+  "SEED": [
+    1482563973,
+    2026382952,
+    1710911661,
+    1295955485,
+    1052860402
+  ],
+  "WINDOW_SIZE": [
+    96
+  ],
+  "BATCH_SIZE": [
+    32
+  ],
+  "EPOCHS": [
+    500
+  ],
+  "PATIENCE": [
+    100
+  ],
+  "LEARNING_RATE": [
+    0.001
+  ],
+  "DROPOUT": [
+    0.2
+  ],
+  "OPTIMIZER": [
+    "Adam"
+  ],
+  "LOSS_FUNCTION": [
+    "mean_squared_error"
+  ],
+  "LAYERS_CONFIG": [
+    [
+      128,
+      64
+    ]
+  ],
+  "BIDIRECTIONAL": [
+    false
+  ],
+  "ACTIVATION_FUNCTION": [
+    [
+      "tanh",
+      "tanh"
+    ]
+  ],
+  "RECURRENT_DROPOUT": [
+    0.0
+  ],
+  "L1_REGULARIZATION": [
+    0.0
+  ],
+  "L2_REGULARIZATION": [
+    0.0
+  ],
+  "NUM_LAYERS": [
+    2
+  ],
+  "EMBED_DIM": [
+    32
+  ],
+  "NUM_HEADS": [
+    4
+  ],
+  "FF_DIM": [
+    32
+  ],
+  "ACTIVATION": [
+    "relu"
+  ],
+  "USE_LAYERNORM": [
+    true
+  ],
+  "POSITIONAL_ENCODING": [
+    "none"
+  ],
+  "grid_id": "artigo6_pipelines",
+  "_descricao": "Artigo 6, reimplementacao de tres pipelines da literatura sob o protocolo: entrada univariada (so o fechamento), L=96, H=1, 70/15/15 com embargo, scaler global ajustado so no treino. model_type lstm (LSTM univariada), cnn_lstm (Conv1D 64 filtros, kernel 3, causal, MaxPool 2, LSTM 128/64) e transformer, cada um na forma publicada (MinMax global) e na variante ancorada no ultimo valor; BTC e ETH; 5 sementes (principal 1482563973 + default_rng(1482563973).integers(1, 2**31-1, 4)). 2 ativos x 3 backbones x 2 normalizacoes x 5 sementes = 60 execucoes. metrics.json traz baselines (persistencia, DM, mimetismo) e o teste de saida constante (constant_zero_normalized).",
+  "model_type": [
+    "lstm",
+    "cnn_lstm",
+    "transformer"
+  ],
+  "SYMBOL": [
+    "BTCUSDT",
+    "ETHUSDT"
+  ],
+  "STEPS_AHEAD": [
+    1
+  ],
+  "NORMALIZATION": [
+    {
+      "strategy": "global",
+      "scaler_type": "minmax"
+    },
+    {
+      "strategy": "local",
+      "x_mode": "zscore",
+      "y_mode": "anchored"
+    }
+  ],
+  "CONV_FILTERS": [
+    64
+  ],
+  "CONV_KERNEL": [
+    3
+  ],
+  "CONV_LAYERS": [
+    1
+  ],
+  "POOL_SIZE": [
+    2
+  ]
+}
