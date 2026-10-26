@@ -19,6 +19,7 @@ from __future__ import annotations
 import concurrent.futures
 import csv
 import json
+import shutil
 import os
 import time
 from datetime import datetime
@@ -71,8 +72,37 @@ def combos_falhos(grid_root: str) -> list:
         summary = json.load(f)
     return [r["params"] for r in summary.get("summary", []) if not r.get("run_id")]
 
+def _params_match(params: dict, rerun_filter: dict) -> bool:
+    """True se todos os pares chave=valor do filtro batem com `params` (comparacao textual, sem caixa)."""
+    for k, v in rerun_filter.items():
+        if str(params.get(k)).lower() != str(v).lower():
+            return False
+    return True
+
+
+def split_rerun(prev_summary: list, rerun_failed: bool, rerun_filter: dict | None):
+    """
+    Separa os registros do grid_summary.json anterior em (mantidos, params a reexecutar,
+    run_ids substituidos). Falhas (sem run_id) entram sempre; com `rerun_filter`
+    (ex.: {"MODEL_TYPE": "lstm"}) entram tambem as combinacoes concluidas que batem
+    com o filtro, e os seus run_ids sao devolvidos para serem movidos para _superseded/.
+    """
+    mantidos, params_rerun, substituidos = [], [], []
+    for r in prev_summary:
+        falhou = not r.get("run_id")
+        bate = bool(rerun_filter) and _params_match(r.get("params", {}), rerun_filter)
+        if falhou or bate:
+            params_rerun.append(r["params"])
+            if not falhou:
+                substituidos.append(r["run_id"])
+        else:
+            mantidos.append(r)
+    return mantidos, params_rerun, substituidos
+
+
 def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
-                    score_on: str = "validation", rerun_failed: bool = False):
+                    score_on: str = "validation", rerun_failed: bool = False,
+                    rerun_filter: dict | None = None):
     """Grid search com suporte a execução paralela segura.
 
     `score_on` e "validation" por padrao: escolher hiperparametro pela metrica
@@ -84,6 +114,12 @@ def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
     funde os novos registros com os que ja deram certo. Leaderboard e
     grid_summary.json sao reescritos completos; grid_provenance.json guarda
     o historico das rodadas anteriores em "history".
+
+    `rerun_filter={"MODEL_TYPE": "lstm"}` reexecuta, alem das falhas, as combinacoes
+    concluidas cujos parametros batem com o filtro (uso: refazer um backbone apos
+    uma correcao de ambiente). As pastas antigas dessas execucoes sao movidas para
+    <grid>/_superseded/<run_id>/ (fora do glob */metrics.json das analises) e os
+    run_ids ficam em grid_provenance.json ("superseded").
     """
     # Import tardio: services.model_service importa este modulo no topo, entao
     # importar de la em tempo de modulo criaria ciclo. O worker fica junto de
@@ -99,22 +135,27 @@ def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
     grid_root = os.path.join(BASE_DIR, "results", "grid", grid_id)
     os.makedirs(grid_root, exist_ok=True)
     # Reexecucao de falhas: parte do grid_summary.json anterior.
-    registros_anteriores, params_falhos, prov_history = [], None, []
-    if rerun_failed:
+    registros_anteriores, params_falhos, prov_history, substituidos = [], None, [], []
+    if rerun_failed or rerun_filter:
         summary_path_prev = os.path.join(grid_root, "grid_summary.json")
         if not os.path.exists(summary_path_prev):
-            raise FileNotFoundError(f"rerun_failed exige {summary_path_prev}")
+            raise FileNotFoundError(f"reexecucao exige {summary_path_prev}")
         with open(summary_path_prev, "r") as f:
             prev = json.load(f)
-        registros_anteriores = [r for r in prev.get("summary", []) if r.get("run_id")]
-        params_falhos = [r["params"] for r in prev.get("summary", []) if not r.get("run_id")]
+        registros_anteriores, params_falhos, substituidos = split_rerun(prev.get("summary", []), rerun_failed, rerun_filter)
+        sup_dir = os.path.join(grid_root, "_superseded")
+        for rid in substituidos:
+            src = os.path.join(grid_root, rid)
+            if os.path.isdir(src):
+                os.makedirs(sup_dir, exist_ok=True)
+                shutil.move(src, os.path.join(sup_dir, rid))
         prov_prev_path = os.path.join(grid_root, "grid_provenance.json")
         if os.path.exists(prov_prev_path):
             with open(prov_prev_path, "r") as f:
                 prov_prev = json.load(f)
             prov_history = prov_prev.pop("history", []) + [prov_prev]
-        print(f"[GRID] Reexecucao: {len(params_falhos)} combinacoes falhas, "
-              f"{len(registros_anteriores)} ja concluidas", flush=True)
+        print(f"[GRID] Reexecucao: {len(params_falhos)} combinacoes (filtro={rerun_filter}, "
+              f"{len(substituidos)} substituidas), {len(registros_anteriores)} mantidas", flush=True)
     with open(os.path.join(grid_root, "unified_config.json"), "w") as f:
         json.dump(unified_config, f, indent=4)
     # Proveniencia do grid: codigo e ambiente no momento do disparo. Cada combo
@@ -123,8 +164,8 @@ def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
     grid_started = datetime.now()
     write_provenance(os.path.join(grid_root, "grid_provenance.json"),
                      grid_id=grid_id, started_at=grid_started.isoformat(timespec="seconds"),
-                     rerun_failed=rerun_failed, history=prov_history,
-                     score=score, score_on=score_on, code=code_version(), environment=environment())
+                     rerun_failed=rerun_failed, rerun_filter=rerun_filter, superseded=substituidos,
+                     history=prov_history, score=score, score_on=score_on, code=code_version(), environment=environment())
 
     par = (base_cfg.get("parallel") or {})
     enabled = bool(par.get("enabled", False))
@@ -314,8 +355,8 @@ def run_grid_search(service, unified_config: dict, *, score: str = "rmse",
                      duration_s=round((grid_finished - grid_started).total_seconds(), 1),
                      n_combos=len(combos) + len(registros_anteriores),
                      n_ok=sum(1 for r in results_summary if r.get("run_id")),
-                     rerun_failed=rerun_failed, history=prov_history,
-                     score=score, score_on=score_on, code=code_version(), environment=environment(),
+                     rerun_failed=rerun_failed, rerun_filter=rerun_filter, superseded=substituidos,
+                     history=prov_history, score=score, score_on=score_on, code=code_version(), environment=environment(),
                      runs=[{"run_id": r.get("run_id"), "framework": r["framework"], "model_type": r["model_type"],
                             "params": r["params"], "metrics_path": r.get("metrics_path")} for r in results_summary])
 

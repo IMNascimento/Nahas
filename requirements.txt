@@ -13,7 +13,7 @@ joblib==1.5.1
 
 # Aprendizado profundo
 tensorflow==2.18.0
-keras==3.7.0
+keras==3.9.2  # 3.7.0 aplicava dropout da LSTM na inferencia (caminho cuDNN); corrigido a partir do 3.9
 
 # Banco de dados
 peewee==3.18.1

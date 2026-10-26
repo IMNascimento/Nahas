@@ -2071,7 +2071,8 @@ class ModelService:
     impasse_no_escalonador = staticmethod(_grid.impasse_no_escalonador)
 
     def grid_search_unified(self, unified_config: dict, *, score: str = "rmse",
-                            score_on: str = "validation", rerun_failed: bool = False):
+                            score_on: str = "validation", rerun_failed: bool = False,
+                            rerun_filter: dict | None = None):
         """Delega para `optimization.grid_search.run_grid_search`."""
         return _grid.run_grid_search(self, unified_config, score=score, score_on=score_on,
-                                     rerun_failed=rerun_failed)
+                                     rerun_failed=rerun_failed, rerun_filter=rerun_filter)

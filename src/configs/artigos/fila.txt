@@ -1,4 +1,11 @@
 # Fila do servidor (lida por run_artigos.sh a cada item). Grades concluidas ate 25/10: artigo1_principal_H1/H6/H24, artigo2_degenerescencia, artigo1_sementes_H1(+_linear,_evomsn).
+# --- reexecucao das celulas LSTM com Keras 3.9.2 (3.7.0 aplicava dropout na inferencia da LSTM); pastas antigas em _superseded/
+cmd rerun_lstm_artigo1_principal_H1 python run_grid.py configs/artigos/artigo1_principal_H1.json --rerun-filter MODEL_TYPE=lstm
+cmd rerun_lstm_artigo1_sementes_H1 python run_grid.py configs/artigos/artigo1_sementes_H1.json --rerun-filter MODEL_TYPE=lstm
+cmd rerun_lstm_artigo1_sementes_H1_evomsn python run_grid.py configs/artigos/artigo1_sementes_H1_evomsn.json --rerun-filter MODEL_TYPE=lstm
+cmd rerun_lstm_artigo1_principal_H6 python run_grid.py configs/artigos/artigo1_principal_H6.json --rerun-filter MODEL_TYPE=lstm
+cmd rerun_lstm_artigo1_principal_H24 python run_grid.py configs/artigos/artigo1_principal_H24.json --rerun-filter MODEL_TYPE=lstm
+cmd rerun_lstm_artigo2_degenerescencia python run_grid.py configs/artigos/artigo2_degenerescencia.json --rerun-filter MODEL_TYPE=lstm
 # --- artigo 1: origem rolante (120 execucoes)
 configs/artigos/artigo1_rolling_BTCUSDT_o0.json
 configs/artigos/artigo1_rolling_BTCUSDT_o1.json
@@ -24,6 +31,8 @@ configs/artigos/artigo1_rolling_BNBUSDT_o4.json
 configs/artigos/artigo4_ablacao_A1.json
 configs/artigos/artigo4_ablacao_A2.json
 configs/artigos/artigo4_ablacao_A3.json
+# --- artigo 6: pipelines publicados (60)
+configs/artigos/artigo6_pipelines.json
 # --- artigos 1 e 4: varredura de L, LSTM/Transformer (480)
 configs/artigos/artigo4_L24_H1.json
 configs/artigos/artigo4_L48_H1.json

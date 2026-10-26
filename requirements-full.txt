@@ -87,7 +87,7 @@ jupyter_server_terminals==0.5.3
 jupyterlab==4.3.4
 jupyterlab_pygments==0.3.0
 jupyterlab_server==2.27.3
-keras==3.7.0
+keras==3.9.2  # 3.7.0 aplicava dropout da LSTM na inferencia (caminho cuDNN); corrigido a partir do 3.9
 kiwisolver==1.4.8
 lazr.uri==1.0.7
 libclang==18.1.1
