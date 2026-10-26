@@ -37,6 +37,8 @@ proximo() {
   done < "$FILA_TXT"
   return 1
 }
+# Checagem das execucoes novas (determinismo do modelo salvo, metricas, saida nula) apos cada item.
+checar() { CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=2 TF_NUM_INTRAOP_THREADS=2 python analysis/checar_execucoes.py --log >> logs/checagem_run.log 2>&1 || log "ATENCAO: checagem encontrou FAIL (ver logs/checagem.log)"; }
 while item=$(proximo); do
   if [[ "$item" == cmd\ * ]]; then
     nome=$(awk '{print $2}' <<<"$item"); comando=$(cut -d' ' -f3- <<<"$item")
@@ -44,6 +46,7 @@ while item=$(proximo); do
     bash -c "$comando" > "logs/$nome.log" 2>&1; rc=$?
     log "fim $nome (exit $rc)"
     if [[ $rc -eq 0 ]]; then touch "results/fila_done/$nome"; else log "ERRO em $nome; marcando como concluido para nao travar a fila (reexecute a mao)"; touch "results/fila_done/$nome"; fi
+    checar
     continue
   fi
   cfg="$item"; nome=$(basename "$cfg" .json)
@@ -63,6 +66,7 @@ while item=$(proximo); do
       log "fim reexecucao $nome (exit $?)"
     fi
     touch "results/fila_done/$nome"
+    checar
   else
     log "ERRO: $nome terminou sem grid_summary.json; marcando como concluido para nao travar a fila"
     touch "results/fila_done/$nome"
