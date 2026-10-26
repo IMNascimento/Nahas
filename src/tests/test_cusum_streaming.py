@@ -159,3 +159,89 @@ def test_predict_block_global_usa_o_scaler_salvo(tmp_path):
                         inverse_kind="global", scaler_dir=str(tmp_path))
     assert np.allclose(out["y_hat"], y.mean())            # zero normalizado = média do treino
     assert np.allclose(out["scale"], y.std())
+
+
+# ------------------------------------------------------------ simulacao hora a hora (Algoritmo 1)
+from optimization.streaming import (   # noqa: E402
+    STREAM_POLICIES, block_bounds, finetune_slices, first_alarm, simulate_hourly,
+)
+
+
+def test_blocos_e_fatias_do_finetuning():
+    assert block_bounds(1500, 720) == [(0, 720), (720, 1440), (1440, 1500)]
+    sl = finetune_slices(2000, days=90, val_days=7, embargo=96)
+    assert sl["val"] == (2001 - 168, 2001)
+    assert sl["train"] == (2001 - 2160, 2001 - 168 - 96)
+    sl0 = finetune_slices(10, days=30, val_days=3, embargo=96)       # pode voltar antes do inicio da simulacao
+    assert sl0["train"][0] < 0 and sl0["train"][1] < sl0["val"][0]
+    with pytest.raises(ValueError):
+        finetune_slices(10, days=1, val_days=0, embargo=96)
+    assert set(STREAM_POLICIES) == {"A", "B", "C", "D", "E", "B_anch", "E_per"}
+
+
+def test_first_alarm_para_no_primeiro_disparo():
+    mon = CusumMonitor(k=0.5, h=3.0)
+    z = np.array([0.0, 0.0, 2.0, 2.0, 2.0, 5.0, 5.0])
+    i = first_alarm(mon, z)
+    assert i == 4 and mon.s_plus == 0.0 and mon.alarms == [4]      # 1.5, 3.0 (nao excede), 4.5 > h
+
+
+def _cenario_horario(n=3000, shift_at=1500):
+    """Vies constante ate `shift_at`; depois triplica. Fine-tuning reduz o vies a 30%."""
+    rng = np.random.default_rng(4)
+
+    def predict_fn(state, a, b):
+        idx = np.arange(a, b)
+        y = 100 + rng.normal(0, 1, len(idx))
+        bias = state["b"] * np.where(idx >= shift_at, 3.0, 1.0)
+        return {"y": y, "y_hat": y - bias + rng.normal(0, 0.3, len(idx)),
+                "y_last": y + rng.normal(0, 1.4, len(idx)), "scale": np.ones(len(idx))}
+
+    chamadas = []
+
+    def finetune_fn(state, t):
+        chamadas.append(t)
+        pior = len(chamadas) % 2 == 0                    # toda segunda tentativa e pior (rollback)
+        return {"b": state["b"] * 0.3}, (0.9 if pior else 0.4), 0.6, 2.0
+
+    return predict_fn, finetune_fn, chamadas, n
+
+
+def test_simulacao_horaria_periodica_e_cusum():
+    pf, ff, chamadas, n = _cenario_horario()
+    r0 = simulate_hourly("none", n, pf, ff, {"b": 0.5}, monitor=CusumMonitor(0.5, 20.0))
+    assert r0["n_retrain"] == 0 and r0["n_alarms"] > 0            # monitor passivo registra alarmes
+    assert not np.isnan(r0["hours"]["y_hat"]).any() and r0["hours"]["block"][-1] == (n - 1) // 720
+
+    pf, ff, chamadas, n = _cenario_horario()
+    rp = simulate_hourly("periodic", n, pf, ff, {"b": 0.5}, period=720, block=720,
+                         replay_fn=lambda s, a, b: pf(s, a, b)["y_hat"])
+    assert chamadas == [719, 1439, 2159, 2879]                     # 720 h desde o ultimo update, nunca na ultima hora
+    assert rp["n_retrain"] == 4 and rp["n_accepted"] == 2 and rp["n_rejected"] == 2
+    rejeitados = [e for e in rp["events"] if e["type"] == "finetune" and not e["accepted"]]
+    assert all("replay" in e and 0 < e["replay"]["to"] - e["replay"]["from"] <= 720 for e in rejeitados)
+    assert rejeitados[0]["replay"]["to"] - rejeitados[0]["replay"]["from"] == 720 and rejeitados[-1]["replay"]["to"] == n
+    assert all(np.isfinite(e["replay"]["rmse_rejected"]) for e in rejeitados)
+    assert rp["hours"]["model_version"][-1] == 2
+
+    pf, ff, chamadas, n = _cenario_horario()
+    rc = simulate_hourly("cusum", n, pf, ff, {"b": 0.5}, monitor=CusumMonitor(0.5, 20.0), period=720)
+    assert rc["n_retrain"] >= 1 and 1500 <= chamadas[0] < 1560     # detecta logo apos a mudanca
+    assert rc["hours"]["alarm"][chamadas[0]]                        # a hora do alarme e a do fine-tuning
+    assert rc["hours"]["model_version"][chamadas[0]] == 0 and rc["hours"]["model_version"][chamadas[0] + 1] == 1
+
+    pf, ff, chamadas, n = _cenario_horario()
+    rcp = simulate_hourly("cusum+periodic", n, pf, ff, {"b": 0.5}, monitor=CusumMonitor(0.5, 20.0), period=720)
+    assert 719 in chamadas and rcp["n_retrain"] >= 4
+
+    with pytest.raises(ValueError):
+        simulate_hourly("cusum", 100, pf, ff, {"b": 0.5})
+
+
+def test_rollback_sem_tolerancia_exige_melhora_estrita():
+    pf, _, _, n = _cenario_horario(n=1500)
+    r = simulate_hourly("periodic", n, pf, lambda s, t: (s, 0.6, 0.6, 1.0), {"b": 0.5}, period=720)
+    assert r["n_retrain"] == 2 and r["n_accepted"] == 0
+    r2 = simulate_hourly("periodic", n, pf, lambda s, t: (s, 0.6, 0.6, 1.0), {"b": 0.5}, period=720,
+                         rollback_tolerance_pct=5.0)
+    assert r2["n_accepted"] == 2
