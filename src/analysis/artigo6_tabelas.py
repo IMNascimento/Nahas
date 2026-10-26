@@ -37,8 +37,8 @@ def tab_papers(art):
         if rr.empty or rr.verdict.str.startswith("not assessable").all():
             # uma linha por artigo
             reason = rr.verdict.iloc[0] if not rr.empty else str(a.rw_verdict)
-            reason = reason.replace("not assessable", "n/a").replace("(", "").replace(")", "")
-            metric = esc(str(a.metrics_reported).split(";")[0].split(":")[-1].strip())[:28] if isinstance(a.metrics_reported, str) else "--"
+            reason = reason.replace("not assessable", "n/a").replace("normalized units", "normalized").replace("asset not in local DB; ", "")
+            metric = "normalized scale" if "normalized" in reason else "see sheet"
             period = "declared" if str(a.test_period_declared).startswith("yes") else ("partial" if str(a.test_period_declared).startswith("partial") else "NR")
             rows.append(f"\\citet{{{key}}} & {esc(a.assets).split('(')[0].strip()[:18]} & {freq} & {period} & {metric} & -- & {esc(reason)} \\\\")
             continue
@@ -46,21 +46,22 @@ def tab_papers(art):
             n_assess += 1
             v = x.verdict
             n_better += v == "better"; n_worse += v == "worse"; n_ind += v == "indistinguishable"
-            pm = esc(x.paper_metrics).replace("=", " = ")
+            pm = esc(x.paper_metrics).replace("=", " ")
             # mesma metrica da persistencia: RMSE quando o artigo da RMSE, senao MAPE/MAE
             if "RMSE" in str(x.paper_metrics):
-                rw = f"RMSE = {x.rw_RMSE:,.1f}"
+                rw = f"RMSE {x.rw_RMSE:,.1f}"
             elif "MAPE" in str(x.paper_metrics):
-                rw = f"MAPE = {x.rw_MAPE_pct:.2f}\\%"
+                rw = f"MAPE {x.rw_MAPE_pct:.2f}\\%"
             else:
-                rw = f"MAE = {x.rw_MAE:,.1f}"
-            rows.append(f"\\citet{{{key}}} & {x.asset} & {freq} & {x.test_start}--{x.test_end} & {pm} & {rw} & {v} \\\\")
+                rw = f"MAE {x.rw_MAE:,.1f}"
+            vlab = {"better": "better", "worse": "worse", "indistinguishable": "within 5\\%"}[v]
+            rows.append(f"\\citet{{{key}}} & {x.asset} & {freq} & {x.test_start} to {x.test_end} & {pm} & {rw} & {vlab} \\\\")
     linhas = ["\\begin{table}[p]", "\\centering", "\\scriptsize",
               "\\caption{Published pipelines and the naive reference on the same period. One row per assessable paper--asset pair and one row per paper whose test period is not declared or whose metrics are on a normalized scale. "
-              "Frequency d = daily, h = hourly; horizon one step in every row. The random-walk value is computed on the declared test period from the Binance USDT series (daily close = last hourly close of the UTC day). "
-              "Verdict within $\\pm$5\\% of the persistence value is \\emph{indistinguishable}. Full extraction in \\path{extraction/papers.csv}.}",
-              "\\label{tab:papers}", "\\resizebox{\\textwidth}{!}{%", "\\begin{tabular}{llllllll}", "\\toprule",
-              "Paper & Asset & Freq. & Test period & Reported & Random walk & Verdict \\\\", "\\midrule", *rows, "\\bottomrule", "\\end{tabular}}", "\\end{table}"]
+              "Fr.: d = daily, h = hourly; horizon one step in every row. The random-walk value is computed on the declared test period from the Binance USDT series (daily close = last hourly close of the UTC day). "
+              "A reported value within $\\pm$5\\% of the persistence value is marked \\emph{within 5\\%} (indistinguishable). Full extraction in \\texttt{extraction/papers.csv}.}",
+              "\\label{tab:papers}", "\\begin{tabular}{@{}p{2.6cm}p{1.5cm}p{0.45cm}p{2.5cm}>{\\raggedright\\arraybackslash}p{2.9cm}p{1.5cm}>{\\raggedright\\arraybackslash}p{1.9cm}@{}}", "\\toprule",
+              "Paper & Asset & Fr. & Test period & Reported & Random walk & Verdict \\\\", "\\midrule", *rows, "\\bottomrule", "\\end{tabular}", "\\end{table}"]
     os.makedirs(os.path.join(art, "tables"), exist_ok=True)
     open(os.path.join(art, "tables", "tab_papers.tex"), "w").write("\n".join(linhas) + "\n")
     print(f"papers: {len(p)} artigos, {n_assess} pares avaliaveis: better {n_better}, worse {n_worse}, indistinguishable {n_ind}")
