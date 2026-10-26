@@ -2,6 +2,7 @@
 # --- reexecucao das celulas LSTM com Keras 3.9.2 (3.7.0 aplicava dropout na inferencia da LSTM); pastas antigas em _superseded/
 cmd rerun_lstm_artigo1_principal_H1 python run_grid.py configs/artigos/artigo1_principal_H1.json --rerun-filter MODEL_TYPE=lstm
 cmd rerun_lstm_artigo1_sementes_H1 python run_grid.py configs/artigos/artigo1_sementes_H1.json --rerun-filter MODEL_TYPE=lstm
+cmd rerun_falhas_artigo1_principal_H1 python run_grid.py configs/artigos/artigo1_principal_H1.json --rerun-failed
 cmd rerun_lstm_artigo1_sementes_H1_evomsn python run_grid.py configs/artigos/artigo1_sementes_H1_evomsn.json --rerun-filter MODEL_TYPE=lstm
 cmd rerun_lstm_artigo1_principal_H6 python run_grid.py configs/artigos/artigo1_principal_H6.json --rerun-filter MODEL_TYPE=lstm
 cmd rerun_lstm_artigo1_principal_H24 python run_grid.py configs/artigos/artigo1_principal_H24.json --rerun-filter MODEL_TYPE=lstm

@@ -102,7 +102,7 @@ def checar(run_dir: str, com_modelo: bool = True) -> dict:
         else:
             try:
                 import keras
-                model = keras.saving.load_model(models[0], compile=False)
+                model = keras.saving.load_model(models[0], compile=False, safe_mode=False)
                 shp = model.input_shape
                 shp = shp[0] if isinstance(shp, list) else shp
                 x = np.random.default_rng(0).standard_normal((8, *shp[1:])).astype("float32")
