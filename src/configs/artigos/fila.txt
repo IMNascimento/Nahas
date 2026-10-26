@@ -37,7 +37,8 @@ configs/artigos/artigo6_pipelines.json
 configs/artigos/artigo4_L24_H1.json
 configs/artigos/artigo4_L48_H1.json
 configs/artigos/artigo4_L168_H1.json
-# --- (artigos 5 e 6 entram aqui quando o codigo estiver pronto)
+# --- artigo 5: simulacao de fluxo (48 treinos iniciais + 168 simulacoes; retomavel)
+cmd artigo5_fluxo python run_streaming.py configs/artigos/artigo5_fluxo.json --workers 4 --gpus 0,1
 # --- artigo 4: varredura de L, linear e EvoMSN (420)
 configs/artigos/artigo4_L24_H1_linear.json
 configs/artigos/artigo4_L48_H1_linear.json
