@@ -73,6 +73,22 @@ def _block_bootstrap(z: np.ndarray, n: int, block: int, rng: np.random.Generator
     return np.concatenate([z[s:s + block] for s in starts])[:n]
 
 
+def _bootstrap_series(z_ref: np.ndarray, n_sim: int, horizon: int, block: int,
+                      rng: np.random.Generator) -> np.ndarray:
+    """`n_sim` series simuladas (bootstrap em blocos) de `horizon` observacoes cada."""
+    return np.stack([_block_bootstrap(z_ref, horizon, block, rng) for _ in range(n_sim)])
+
+
+def _arl_on_series(series: np.ndarray, k: float, h: float) -> float:
+    """ARL0 sobre series ja simuladas; sem alarme conta `horizon` (censura a direita)."""
+    horizon = series.shape[1]
+    comps = []
+    for z in series:
+        out = cusum_two_sided(z, k, h, reset=False)
+        comps.append(out["alarms"][0] + 1 if out["alarms"] else horizon)
+    return float(np.mean(comps))
+
+
 def average_run_length(z_ref: np.ndarray, k: float, h: float, *, n_sim: int = 200,
                        horizon: int = 20000, block: int = 24,
                        rng: Optional[np.random.Generator] = None) -> float:
@@ -83,12 +99,7 @@ def average_run_length(z_ref: np.ndarray, k: float, h: float, *, n_sim: int = 20
     """
     rng = rng or np.random.default_rng(0)
     z_ref = np.asarray(z_ref, dtype=float).reshape(-1)
-    comps = []
-    for _ in range(n_sim):
-        z = _block_bootstrap(z_ref, horizon, block, rng)
-        out = cusum_two_sided(z, k, h, reset=False)
-        comps.append(out["alarms"][0] + 1 if out["alarms"] else horizon)
-    return float(np.mean(comps))
+    return _arl_on_series(_bootstrap_series(z_ref, n_sim, horizon, block, rng), k, h)
 
 
 def calibrate_threshold(z_ref: np.ndarray, *, k: float = 0.5, target_arl0: float = 720.0,
@@ -99,6 +110,9 @@ def calibrate_threshold(z_ref: np.ndarray, *, k: float = 0.5, target_arl0: float
     Bisseção em h para que ARL0(h) ≈ target_arl0 (ex.: 720 horas = 30 dias).
     Os resíduos de referência são centrados e padronizados antes da simulação,
     e a mesma transformação deve ser aplicada em produção (devolvida em `mu`, `sd`).
+    As mesmas séries simuladas são usadas em todas as avaliações de h (números
+    aleatórios comuns), o que torna ARL0(h) monótona e a bisseção estável.
+    `converged` diz se o ARL0 final ficou dentro de `tol` do alvo.
     """
     rng = rng or np.random.default_rng(0)
     z = np.asarray(z_ref, dtype=float).reshape(-1)
@@ -107,9 +121,10 @@ def calibrate_threshold(z_ref: np.ndarray, *, k: float = 0.5, target_arl0: float
         raise ValueError("Resíduos de referência sem dispersão.")
     zc = (z - mu) / sd
     horizon = int(max(5 * target_arl0, 2000))
+    series = _bootstrap_series(zc, n_sim, horizon, block, rng)
     lo, hi = h_min, h_max
-    arl_lo = average_run_length(zc, k, lo, n_sim=n_sim, horizon=horizon, block=block, rng=rng)
-    arl_hi = average_run_length(zc, k, hi, n_sim=n_sim, horizon=horizon, block=block, rng=rng)
+    arl_lo = _arl_on_series(series, k, lo)
+    arl_hi = _arl_on_series(series, k, hi)
     if arl_hi < target_arl0:
         return {"h": hi, "arl0": arl_hi, "k": k, "mu": mu, "sd": sd, "converged": False}
     if arl_lo > target_arl0:
@@ -117,14 +132,19 @@ def calibrate_threshold(z_ref: np.ndarray, *, k: float = 0.5, target_arl0: float
     h, arl = hi, arl_hi
     for _ in range(max_iter):
         h = 0.5 * (lo + hi)
-        arl = average_run_length(zc, k, h, n_sim=n_sim, horizon=horizon, block=block, rng=rng)
+        arl = _arl_on_series(series, k, h)
         if abs(arl - target_arl0) / target_arl0 < tol:
             break
         if arl < target_arl0:
             lo = h
         else:
             hi = h
-    return {"h": float(h), "arl0": float(arl), "k": float(k), "mu": mu, "sd": sd, "converged": True}
+    converged = bool(abs(arl - target_arl0) / target_arl0 < tol)
+    if not converged:
+        # ARL0(h) deu um salto entre lo e hi (poucos residuos de referencia): fica
+        # com o menor h que atinge o alvo, o lado conservador (menos alarmes falsos).
+        h, arl = hi, _arl_on_series(series, k, hi)
+    return {"h": float(h), "arl0": float(arl), "k": float(k), "mu": mu, "sd": sd, "converged": converged}
 
 
 class CusumMonitor:
