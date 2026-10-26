@@ -154,18 +154,18 @@ def tab_horizon(df, out):
     rows = []
     for m in MODELS:
         cells = []
-        for n in ("anchored", "winZ", "winMM", "global", "evomsn"):
+        for n in ("anchored", "winZ", "global"):
             for H in (1, 6, 24):
                 g = df[(df.H == H) & (df.model == m) & (df.norm == n)]
                 if H == 1:
                     g = g[g.seed == SEED_PRINCIPAL]
                 cells.append(f"{g.U.mean():.3f}")
         rows.append(f"{MODEL[m]} & " + " & ".join(cells) + " \\\\")
-    head = ("\\multirow{2}{*}{Backbone} & \\multicolumn{3}{c}{Anchored} & \\multicolumn{3}{c}{Window Z} & \\multicolumn{3}{c}{Window MinMax} & \\multicolumn{3}{c}{Global Z} & \\multicolumn{3}{c}{EvoMSN} \\\\"
-            "\\cmidrule(lr){2-4}\\cmidrule(lr){5-7}\\cmidrule(lr){8-10}\\cmidrule(lr){11-13}\\cmidrule(lr){14-16} & $H{=}1$ & $6$ & $24$ & $1$ & $6$ & $24$ & $1$ & $6$ & $24$ & $1$ & $6$ & $24$ & $1$ & $6$ & $24$")
+    head = ("\\multirow{2}{*}{Backbone} & \\multicolumn{3}{c}{Anchored} & \\multicolumn{3}{c}{Window Z} & \\multicolumn{3}{c}{Global Z} \\\\"
+            "\\cmidrule(lr){2-4}\\cmidrule(lr){5-7}\\cmidrule(lr){8-10} & $H{=}1$ & $6$ & $24$ & $1$ & $6$ & $24$ & $1$ & $6$ & $24$")
     tabela(rows, head,
            "Theil's $U$ by horizon, averaged over the four assets, seed of the main grid, $L = 96$. For $H > 1$ the RMSE is computed over the $H$ steps of the forecast vector and persistence is $p_t$ at every step.",
-           "tab:horizon", out, "lrrrrrrrrrrrrrrr", wide=True)
+           "tab:horizon", out, "lrrrrrrrrr")
 
 
 def tab_terciles(t, out):
@@ -314,6 +314,9 @@ def fig_U(h1, out):
                         color=["#2a78d6", "#eb6834", "#1baf7a"][j], label=MODEL[m], mfc="white" if m == "transformer" else None)
         ax.axhline(1, color="#444444", lw=0.8)
         ax.set_yscale("log")
+        ax.set_ylim(0.9, 12)
+        ax.set_yticks([1, 1.1, 1.5, 2, 3, 5, 10])
+        ax.set_yticklabels(["1", "1.1", "1.5", "2", "3", "5", "10"])
         ax.set_xticks(x)
         ax.set_xticklabels(["Glob. Z", "Win. Z", "Win. MM", "Anch.", "EvoMSN"], rotation=45, ha="right", fontsize=7)
         ax.set_title(ASSET[sym], fontsize=9)
