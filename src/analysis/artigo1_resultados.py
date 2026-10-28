@@ -63,10 +63,14 @@ def carregar(grid_root: str) -> pd.DataFrame:
     linhas = []
     for H, grids in [(1, GRIDS_H1), *GRIDS_H.items()]:
         for g in grids:
+            # so as execucoes correntes do grid (grid_summary.json); pastas orfas de
+            # tentativas substituidas ficam de fora
+            sp = os.path.join(grid_root, g, "grid_summary.json")
+            correntes = {r["run_id"] for r in json.load(open(sp))["summary"] if r.get("run_id")} if os.path.exists(sp) else None
             for mp in sorted(glob.glob(os.path.join(grid_root, g, "*", "metrics.json"))):
                 d = os.path.dirname(mp)
                 pp = os.path.join(d, "provenance.json")
-                if not os.path.exists(pp):
+                if not os.path.exists(pp) or (correntes is not None and os.path.basename(d) not in correntes):
                     continue
                 m, p = json.load(open(mp)), json.load(open(pp))
                 b = m.get("baselines", {})
